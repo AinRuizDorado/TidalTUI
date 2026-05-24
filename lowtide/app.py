@@ -325,6 +325,7 @@ class LowTideApp(App):
         self._current_favourited: bool = False
         self._target_volume: int = 80
         self._crossfading: bool = False
+        self._last_paused: bool | None = None
         self._ride_the_tide_cache: tuple[list, str | None] | None = None
 
         # macOS: push track title to mpv's Now Playing widget
@@ -354,7 +355,7 @@ class LowTideApp(App):
         self.player.on_track_start.append(self._on_mpv_track_start)
         self.player.on_track_end.append(self._on_mpv_track_end)
         self.set_interval(1.0, self._poll_player)
-        self._restore_queue()
+        # self._restore_queue()
         self._sync_lastfm_counts()
 
     # --- Player polling ---
@@ -371,6 +372,9 @@ class LowTideApp(App):
         self.query_one(EQVisualizer).paused = paused
         self.mpris.update_position(position)
         self.mpris.update_playback_status(paused)
+        if self._last_paused != paused:
+            self._last_paused = paused
+            self._save_current()
         self.scrobbler.update(position, duration)
 
         # Crossfade: fade out as current track approaches its end
@@ -420,6 +424,33 @@ class LowTideApp(App):
                 await self._set_mpv_title(_now_playing_title(track))
                 await self._set_macos_album_art(track)
 
+    def _save_current(self) -> None:
+        from lowtide.tidal_client import CONF_DIR
+        import json as _json
+        try:
+            os.makedirs(CONF_DIR, exist_ok=True)
+            path = os.path.join(CONF_DIR, "current.json")
+            t = self._current_track
+            if t is None:
+                data = {"status": "Stopped"}
+            else:
+                try:
+                    art_url = t.album.image(320)
+                except Exception:
+                    art_url = None
+                data = {
+                    "status": "Playing" if not getattr(self.query_one(NowPlayingBar), 'paused', False) else "Paused",
+                    "id": getattr(t, "id", None),
+                    "name": getattr(t, "name", ""),
+                    "artist": getattr(getattr(t, "artist", None), "name", ""),
+                    "album": getattr(getattr(t, "album", None), "name", ""),
+                    "art_url": art_url,
+                }
+            with open(path, "w") as f:
+                _json.dump(data, f)
+        except Exception:
+            pass
+
     def _set_current_track(self, track) -> None:
         self._current_track = track
         self._current_favourited = False
@@ -434,6 +465,7 @@ class LowTideApp(App):
             art_url = None
         self.query_one(Sidebar).update_art(art_url)
         self.mpris.update_track(track)
+        self._save_current()
 
     @work(thread=True)
     def _load_track_extras(self, track) -> None:
