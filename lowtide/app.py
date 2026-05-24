@@ -26,7 +26,6 @@ from lowtide.scrobbler import Scrobbler
 from lowtide.screens.library import LibraryScreen
 from lowtide.screens.search import SearchScreen
 from lowtide.tidal_client import TidalClient
-from lowtide.widgets.album_art import AlbumArt
 from lowtide.widgets.eq_visualizer import EQVisualizer
 from lowtide.widgets.now_playing import NowPlayingBar
 
@@ -72,11 +71,6 @@ class Sidebar(Widget):
         border-right: tall $primary-darken-3;
         padding: 1 0;
     }
-    Sidebar AlbumArt {
-        width: 22;
-        height: 11;
-        margin: 0 1 1 1;
-    }
     Sidebar #app-title {
         padding: 0 2;
         text-style: bold;
@@ -98,7 +92,6 @@ class Sidebar(Widget):
         self._nav = nav
 
     def compose(self) -> ComposeResult:
-        yield AlbumArt(id="sidebar-art")
         yield Label("low-tide", id="app-title")
         with ListView(id="nav"):
             for key, label in self._nav:
@@ -115,9 +108,6 @@ class Sidebar(Widget):
             if getattr(item, "_nav_key", None) == key:
                 lv.index = i
                 break
-
-    def update_art(self, url: str | None) -> None:
-        self.query_one(AlbumArt).load(url)
 
     def on_key(self, event) -> None:
         if event.key == "j":
@@ -499,7 +489,7 @@ class LowTideApp(App):
             art_url = track.album.image(320)
         except Exception:
             art_url = None
-        self.query_one(Sidebar).update_art(art_url)
+        self.query_one(NowPlayingBar).update_art(art_url)
         self.mpris.update_track(track)
         self._save_current()
 
@@ -978,7 +968,7 @@ class LowTideApp(App):
             bar.artist_name = track.artist.name
             try:
                 art_url = track.album.image(320)
-                self.query_one(Sidebar).update_art(art_url)
+                self.query_one(NowPlayingBar).update_art(art_url)
             except Exception:
                 pass
 

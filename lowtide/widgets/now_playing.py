@@ -7,11 +7,12 @@ from textual.widget import Widget
 from textual.widgets import Label
 
 from lowtide.lyrics import LyricLine, current_line_index
+from lowtide.widgets.album_art import AlbumArt
 from lowtide.widgets.eq_visualizer import EQVisualizer
 
 _LYRICS_CONTEXT = 2  # lines shown above and below the current line
 _LYRICS_TOTAL = _LYRICS_CONTEXT * 2 + 1  # 5 lines total
-_HEIGHT_COMPACT = 5
+_HEIGHT_COMPACT = 10
 _HEIGHT_EQ = 6 + 1   # 6 bar rows + margin-bottom
 _HEIGHT_LYRICS_EXTRA = _LYRICS_TOTAL + 1
 
@@ -49,10 +50,23 @@ class NowPlayingBar(Widget):
     DEFAULT_CSS = """
     NowPlayingBar {
         dock: bottom;
-        height: 5;
+        height: 10;
         background: transparent;
         border-top: tall $primary-darken-2;
-        padding: 0 2;
+        padding: 1 2;
+    }
+    NowPlayingBar #np-main {
+        height: 7;
+    }
+    NowPlayingBar AlbumArt {
+        width: 14;
+        height: 7;
+        background: transparent;
+    }
+    NowPlayingBar #np-info {
+        width: 1fr;
+        height: 7;
+        padding-left: 2;
     }
     NowPlayingBar #np-track {
         text-style: bold;
@@ -123,8 +137,11 @@ class NowPlayingBar(Widget):
         self._lyrics_visible: bool = False
 
     def compose(self) -> ComposeResult:
-        yield Label("", id="np-track")
-        yield Label("", id="np-artist")
+        with Horizontal(id="np-main"):
+            yield AlbumArt(id="now-playing-art")
+            with Vertical(id="np-info"):
+                yield Label("", id="np-track")
+                yield Label("", id="np-artist")
         with Vertical(id="np-lyrics"):
             for i in range(_LYRICS_TOTAL):
                 cls = "lyric-current" if i == _LYRICS_CONTEXT else "lyric-line"
@@ -240,6 +257,9 @@ class NowPlayingBar(Widget):
         self._eq_visible = not self._eq_visible
         self.query_one(EQVisualizer).display = self._eq_visible
         self._update_height()
+
+    def update_art(self, url: str | None) -> None:
+        self.query_one(AlbumArt).load(url)
 
     def _update_height(self) -> None:
         h = _HEIGHT_COMPACT
