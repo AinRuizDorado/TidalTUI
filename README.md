@@ -246,6 +246,65 @@ Example for bit-perfect TIDAL MAX output:
 }
 ```
 
+## Matugen theme integration
+
+low-tide can automatically apply your [matugen](https://github.com/InioX/matugen)
+Material You color scheme on startup. If matugen is installed and a generated
+palette is found, the entire UI theme is derived from your wallpaper colors.
+
+### How it works
+
+At startup, low-tide scans the following directories for a matugen JSON palette
+(choosing the most recently modified file):
+
+- `~/.local/state/quickshell/generated/`
+- `~/.cache/matugen/images/`
+- `~/.config/matugen/`
+
+Both raw `matugen --json` output and quickshell-style template output are
+supported.
+
+### Custom palette path
+
+If your palette lives elsewhere, specify it in `~/.config/low-tide/config.json`:
+
+```json
+{
+    "matugen_colors_file": "/path/to/your/colors.json"
+}
+```
+
+### Light mode
+
+By default the dark variant of the palette is used. To force light mode, set
+the environment variable:
+
+```sh
+LOWTIDE_MATUGEN_LIGHT=1 low-tide
+```
+
+### Color mapping
+
+| Material You | Textual CSS variable |
+|---|---|
+| `primary` | `$primary` |
+| `secondary` | `$secondary` |
+| `tertiary` | `$accent` |
+| `error` | `$error` |
+| `background` | `$background` |
+| `surface` | `$surface` |
+| `surface_container` | `$panel` |
+| `surface_container_high` | `$boost` |
+| `on_surface` | `$foreground` (text) |
+
+Textual automatically generates the variants (`$primary-darken-1`,
+`$primary-lighten-1`, etc.) from these base colors.
+
+### No matugen?
+
+If matugen is not installed or no palette is found, low-tide falls back to
+the default Textual theme — no configuration or error messages.
+
 ## Known Limitations
 
 - **Unofficial API** – relies on [tidalapi](https://github.com/tamland/python-tidal), which may break when TIDAL updates their backend
@@ -264,6 +323,7 @@ lowtide/
   play_count_store.py  # play count persistence and weighted shuffle
   scrobble_store.py    # Last.fm scrobble history cache (used by Listening Journey)
   app.py               # app layout: sidebar, content area, queue panel
+  matugen_theme.py     # matugen Material You color theme integration
   recommender.py       # Last.fm-powered radio and Ride the Tide logic
   screens/             # library, search, playlist, album, artist, favorites, radio, genre, journey
   widgets/             # now_playing bar, track list table, album art, EQ visualiser
