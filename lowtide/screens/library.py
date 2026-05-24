@@ -43,6 +43,21 @@ class LibraryScreen(Widget):
         self._load_foryou()
         self._load_mixes()
 
+    def on_key(self, event) -> None:
+        """``h`` / ``l`` cycle through the tab panes (My Playlists / For You / Mixes)."""
+        tabs = self.query_one(TabbedContent)
+        tab_ids = ["tab-playlists", "tab-foryou", "tab-mixes"]
+        try:
+            current = tab_ids.index(tabs.active)
+        except ValueError:
+            return
+        if event.key == "h":
+            event.stop()
+            tabs.active = tab_ids[(current - 1) % 3]
+        elif event.key == "l":
+            event.stop()
+            tabs.active = tab_ids[(current + 1) % 3]
+
     @work(thread=True)
     def _load_playlists(self) -> None:
         try:

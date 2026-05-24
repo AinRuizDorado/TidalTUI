@@ -45,6 +45,8 @@ class HeatmapCanvas(Widget):
         Binding("enter", "open_artist",  show=False),
         Binding("r",     "radio",        show=False),
         Binding("g",     "toggle_scale", show=False),
+        Binding("j",     "move_down",    show=False),
+        Binding("k",     "move_up",      show=False),
     ]
 
     DEFAULT_CSS = """

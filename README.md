@@ -150,14 +150,18 @@ The source code for token handling is in [`lowtide/tidal_client.py`](lowtide/tid
 | `S` | Cycle favourite album sort order (name → date added → release date → artist) |
 | `e` | Toggle EQ visualiser |
 | `r` | Toggle repeat |
-| `l` | Love / unlove current track |
+| `f` | Love / unlove current track |
 | `x` | Toggle crossfade |
 | `R` | Start radio from focused track |
 | `D` | Cycle Adventure Dial (Essential → Balanced → Adventurous) in radio / genre screens |
 | `G` | Toggle heatmap scale (Listening Journey) |
+| `shift+h` / `shift+l` | Navigate between panels (left / right) |
+| `h` / `l` | Cycle through tabs in Library (My Playlists / For You / Mixes) |
+| `j` / `k` | Move cursor down / up in lists |
 | `a` | Add focused track to queue |
 | `A` | Add all tracks in current view to queue |
 | `q` | Toggle queue panel |
+| `y` | Toggle lyrics |
 | `ctrl+s` | Go to Search |
 | `ctrl+l` | Go to Library |
 | `escape` | Navigate back |
