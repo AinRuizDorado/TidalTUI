@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Callable
 
 from dbus_next.aio import MessageBus
 from dbus_next.service import ServiceInterface, dbus_property, method, signal
-from dbus_next import BusType, Variant
+from dbus_next import BusType, PropertyAccess, Variant
 
 if TYPE_CHECKING:
     pass
@@ -30,27 +30,27 @@ class MediaPlayer2Interface(ServiceInterface):
     def Quit(self):
         self._quit_cb()
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def CanQuit(self) -> "b":  # noqa: F821
         return True
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def CanRaise(self) -> "b":  # noqa: F821
         return False
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def HasTrackList(self) -> "b":  # noqa: F821
         return False
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def Identity(self) -> "s":  # noqa: F821
         return "low-tide"
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def SupportedUriSchemes(self) -> "as":  # noqa: F821
         return []
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def SupportedMimeTypes(self) -> "as":  # noqa: F821
         return []
 
@@ -122,7 +122,7 @@ class MediaPlayer2PlayerInterface(ServiceInterface):
 
     # --- Properties ---
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def PlaybackStatus(self) -> "s":  # noqa: F821
         return self._playback_status
 
@@ -142,7 +142,7 @@ class MediaPlayer2PlayerInterface(ServiceInterface):
     def Shuffle(self, val: "b"):  # noqa: F821
         self._shuffle = val
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def Metadata(self) -> "a{sv}":  # noqa: F821
         return self._metadata
 
@@ -154,43 +154,43 @@ class MediaPlayer2PlayerInterface(ServiceInterface):
     def Volume(self, val: "d"):  # noqa: F821
         self._volume = max(0.0, min(1.0, val))
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def Position(self) -> "x":  # noqa: F821
         return self._position
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def MinimumRate(self) -> "d":  # noqa: F821
         return 1.0
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def MaximumRate(self) -> "d":  # noqa: F821
         return 1.0
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def Rate(self) -> "d":  # noqa: F821
         return 1.0
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def CanGoNext(self) -> "b":  # noqa: F821
         return True
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def CanGoPrevious(self) -> "b":  # noqa: F821
         return True
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def CanPlay(self) -> "b":  # noqa: F821
         return True
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def CanPause(self) -> "b":  # noqa: F821
         return True
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def CanSeek(self) -> "b":  # noqa: F821
         return True
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def CanControl(self) -> "b":  # noqa: F821
         return True
 
@@ -217,7 +217,7 @@ class MPRISService:
             self._bus.export(MPRIS_OBJECT_PATH, self._player_iface)
             await self._bus.request_name(MPRIS_BUS_NAME)
         except Exception as e:
-            log.warning("MPRIS unavailable: %s", e)
+            log.error("MPRIS unavailable: %s", e)
             self._bus = None
 
     def update_track(self, track) -> None:
