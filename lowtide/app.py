@@ -340,6 +340,13 @@ class LowTideApp(App):
         yield NowPlayingBar()
 
     async def on_mount(self) -> None:
+        # matugen theme integration (must run before any UI interaction)
+        from lowtide.matugen_theme import try_load_matugen_theme
+        matugen_theme = try_load_matugen_theme()
+        if matugen_theme is not None:
+            self.register_theme(matugen_theme)
+            self.theme = "matugen"
+
         try:
             await self.player.start()
         except RuntimeError as e:
