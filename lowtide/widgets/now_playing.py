@@ -12,7 +12,7 @@ from lowtide.widgets.eq_visualizer import EQVisualizer
 
 _LYRICS_CONTEXT = 2  # lines shown above and below the current line
 _LYRICS_TOTAL = _LYRICS_CONTEXT * 2 + 1  # 5 lines total
-_HEIGHT_COMPACT = 10
+_HEIGHT_COMPACT = 12
 _HEIGHT_EQ = 6 + 1   # 6 bar rows + margin-bottom
 _HEIGHT_LYRICS_EXTRA = _LYRICS_TOTAL + 1
 
@@ -50,10 +50,10 @@ class NowPlayingBar(Widget):
     DEFAULT_CSS = """
     NowPlayingBar {
         dock: bottom;
-        height: 10;
+        height: 12;
         background: transparent;
         border-top: tall $primary-darken-2;
-        padding: 1 2;
+        padding: 0 2;
     }
     NowPlayingBar #np-main {
         height: 7;
