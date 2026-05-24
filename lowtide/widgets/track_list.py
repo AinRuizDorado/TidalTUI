@@ -83,7 +83,8 @@ class TrackList(Widget):
             self.post_message(self.TrackSelected(self._tracks[idx], idx))
 
     def on_key(self, event) -> None:
-        idx = self.query_one(DataTable).cursor_row
+        table = self.query_one(DataTable)
+        idx = table.cursor_row
         if event.key == "a":
             if 0 <= idx < len(self._tracks):
                 event.stop()
@@ -92,6 +93,12 @@ class TrackList(Widget):
             if 0 <= idx < len(self._tracks):
                 event.stop()
                 self.post_message(self.TrackRadioRequested(self._tracks[idx]))
+        elif event.key == "j":
+            event.stop()
+            table.action_cursor_down()
+        elif event.key == "k":
+            event.stop()
+            table.action_cursor_up()
 
     @property
     def tracks(self) -> list:

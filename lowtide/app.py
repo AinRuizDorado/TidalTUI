@@ -119,6 +119,14 @@ class Sidebar(Widget):
     def update_art(self, url: str | None) -> None:
         self.query_one(AlbumArt).load(url)
 
+    def on_key(self, event) -> None:
+        if event.key == "j":
+            event.stop()
+            self.query_one(ListView).action_cursor_down()
+        elif event.key == "k":
+            event.stop()
+            self.query_one(ListView).action_cursor_up()
+
 
 # ---------------------------------------------------------------------------
 # Content area
@@ -159,6 +167,17 @@ class ContentArea(Widget):
             await w.remove()
         self._stack = [widget]
         await self.mount(widget)
+
+    def on_key(self, event) -> None:
+        """Route ``j`` / ``k`` to the focused widget's cursor actions so they
+        behave like the arrow keys on every screen."""
+        action = {"j": "action_cursor_down", "k": "action_cursor_up"}.get(event.key)
+        if action is None:
+            return
+        focused = self.screen.focused if self.screen is not None else None
+        if focused is not None and hasattr(focused, action):
+            event.stop()
+            getattr(focused, action)()
 
 
 # ---------------------------------------------------------------------------
@@ -207,6 +226,14 @@ class QueuePanel(Widget):
         idx = getattr(event.item, "_queue_index", None)
         if idx is not None:
             asyncio.ensure_future(self.app.jump_to_queue_index(idx))
+
+    def on_key(self, event) -> None:
+        if event.key == "j":
+            event.stop()
+            self.query_one(ListView).action_cursor_down()
+        elif event.key == "k":
+            event.stop()
+            self.query_one(ListView).action_cursor_up()
 
 
 # ---------------------------------------------------------------------------
@@ -275,7 +302,7 @@ class LowTideApp(App):
         Binding("s", "toggle_shuffle", "Shuffle"),
         Binding("r", "toggle_repeat", "Repeat"),
         Binding("x", "toggle_crossfade", "Crossfade"),
-        Binding("l", "toggle_favourite", "Love"),
+        Binding("f", "toggle_favourite", "Love"),
         Binding("q", "toggle_queue", "Queue"),
         Binding("e", "toggle_eq", "EQ"),
         Binding("y", "toggle_lyrics", "Lyrics", show=False),
@@ -283,6 +310,8 @@ class LowTideApp(App):
         Binding("ctrl+s", "focus_search", "Search"),
         Binding("ctrl+l", "focus_library", "Library"),
         Binding("ctrl+q", "quit", "Quit"),
+        Binding("H", "focus_sidebar", "Sidebar", show=False),
+        Binding("L", "focus_next_panel", "Next Panel", show=False),
     ]
 
     def __init__(self, client: TidalClient):
@@ -334,9 +363,9 @@ class LowTideApp(App):
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="main"):
-            yield Sidebar(nav=self._nav)
-            yield ContentArea()
-            yield QueuePanel()
+            yield Sidebar(nav=self._nav, id="sidebar-panel")
+            yield ContentArea(id="content-panel")
+            yield QueuePanel(id="queue-panel")
         yield NowPlayingBar()
 
     async def on_mount(self) -> None:
@@ -641,6 +670,14 @@ class LowTideApp(App):
 
     async def action_focus_library(self) -> None:
         await self._switch_root(LibraryScreen(), "library")
+
+    def action_focus_sidebar(self) -> None:
+        """Focus the previous widget in tab order (``shift+h``)."""
+        self.screen.focus_previous()
+
+    def action_focus_next_panel(self) -> None:
+        """Focus the next widget in tab order (``shift+l``)."""
+        self.screen.focus_next()
 
     async def on_list_view_selected(self, event: ListView.Selected) -> None:
         key = getattr(event.item, "_nav_key", None)
