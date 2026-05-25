@@ -12,9 +12,6 @@ from lowtide.widgets.eq_visualizer import EQVisualizer
 
 _LYRICS_CONTEXT = 2  # lines shown above and below the current line
 _LYRICS_TOTAL = _LYRICS_CONTEXT * 2 + 1  # 5 lines total
-_HEIGHT_COMPACT = 8
-_HEIGHT_EQ = 6 + 1   # 6 bar rows + margin-bottom
-_HEIGHT_LYRICS_EXTRA = _LYRICS_TOTAL + 1
 
 
 def _fmt(seconds: float) -> str:
@@ -50,21 +47,20 @@ class NowPlayingBar(Widget):
     DEFAULT_CSS = """
     NowPlayingBar {
         dock: bottom;
-        height: 8;
+        height: 22%;
         background: transparent;
         border-top: tall $primary-darken-2;
     }
     NowPlayingBar #np-main {
-        height: 7;
+        height: 1fr;
     }
     NowPlayingBar AlbumArt {
         width: 14;
-        height: 7;
+        height: 100%;
         background: transparent;
     }
     NowPlayingBar #np-info {
         width: 1fr;
-        height: 7;
         padding-left: 2;
     }
     NowPlayingBar #np-track {
@@ -94,7 +90,7 @@ class NowPlayingBar(Widget):
         text-align: center;
     }
     NowPlayingBar #np-bottom {
-        height: 1;
+        height: auto;
     }
     NowPlayingBar #np-controls {
         width: 12;
@@ -261,12 +257,12 @@ class NowPlayingBar(Widget):
         self.query_one(AlbumArt).load(url)
 
     def _update_height(self) -> None:
-        h = _HEIGHT_COMPACT
+        base = 22
         if self._lyrics and self._lyrics_visible:
-            h += _HEIGHT_LYRICS_EXTRA
+            base += 8
         if self._eq_visible:
-            h += _HEIGHT_EQ
-        self.styles.height = h
+            base += 10
+        self.styles.height = f"{base}%"
 
     def _refresh_lyrics_display(self) -> None:
         lines = self._lyrics
