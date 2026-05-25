@@ -50,6 +50,7 @@ class NowPlayingBar(Widget):
         height: 22%;
         background: transparent;
         border-top: tall $primary-darken-2;
+        padding: 0 2;
     }
     NowPlayingBar #np-main {
         height: 1fr;
