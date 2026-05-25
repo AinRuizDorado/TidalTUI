@@ -54,7 +54,7 @@ def _build_mpv_args(config: dict) -> list[str]:
 
 
 class Player:
-    def __init__(self, config: dict | None = None):
+    def __init__(self, config: dict | None = None, initial_volume: int = 80):
         cfg = config or {}
         self._mpv_args = _build_mpv_args(cfg)
         self.crossfade_secs: int = int(cfg.get("crossfade", 0))
@@ -64,7 +64,7 @@ class Player:
         self._req_id = 0
         self._pending: dict[int, asyncio.Future] = {}
         self._read_task: Optional[asyncio.Task] = None
-        self.volume: int = 80
+        self.volume: int = max(0, min(100, initial_volume))
         self.shuffle_mode: int = 0  # 0=off 1=random 2=favourite 3=discovery
         self.repeat: bool = False
 

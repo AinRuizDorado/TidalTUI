@@ -26,6 +26,7 @@ from lowtide.scrobbler import Scrobbler
 from lowtide.screens.library import LibraryScreen
 from lowtide.screens.search import SearchScreen
 from lowtide.tidal_client import TidalClient
+from lowtide.volume_store import load_volume, save_volume
 from lowtide.widgets.eq_visualizer import EQVisualizer
 from lowtide.widgets.now_playing import NowPlayingBar
 
@@ -308,7 +309,8 @@ class LowTideApp(App):
         super().__init__()
         self.client = client
         cfg = client.config
-        self.player = Player(config=cfg)
+        _saved_vol = load_volume()
+        self.player = Player(config=cfg, initial_volume=_saved_vol)
         self.mpris = MPRISService(self)
         self.scrobbler = Scrobbler(cfg)
         from lowtide.tidal_client import CONF_DIR
@@ -342,7 +344,7 @@ class LowTideApp(App):
         self._queue_gen: int = 0  # incremented on each new enqueue to cancel stale workers
         self._current_track = None
         self._current_favourited: bool = False
-        self._target_volume: int = 80
+        self._target_volume: int = _saved_vol
         self._crossfading: bool = False
         self._last_paused: bool | None = None
         self._ride_the_tide_cache: tuple[list, str | None] | None = None
@@ -376,6 +378,7 @@ class LowTideApp(App):
         eq.set_theme(self._eq_theme)
         eq._show_labels = self._eq_labels
         self._target_volume = self.player.volume
+        self.query_one(NowPlayingBar).volume = self._target_volume
         if self.player.crossfade_secs > 0:
             self.query_one(NowPlayingBar).crossfade = True
         self.player.on_track_start.append(self._on_mpv_track_start)
@@ -863,11 +866,13 @@ class LowTideApp(App):
         self._target_volume = min(100, self._target_volume + 5)
         await self.player.set_volume(self._target_volume)
         self.mpris.update_volume(self._target_volume)
+        save_volume(self._target_volume)
 
     async def action_volume_down(self) -> None:
         self._target_volume = max(0, self._target_volume - 5)
         await self.player.set_volume(self._target_volume)
         self.mpris.update_volume(self._target_volume)
+        save_volume(self._target_volume)
 
     async def action_toggle_queue(self) -> None:
         panel = self.query_one(QueuePanel)
@@ -989,6 +994,7 @@ class LowTideApp(App):
             log.debug("Last.fm play count sync: %d tracks", n)
 
     async def on_unmount(self) -> None:
+        save_volume(self._target_volume)
         self._save_queue()
         self._play_count_store.save()
         self._cleanup_macos_art_temp()
