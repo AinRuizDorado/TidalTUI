@@ -353,6 +353,10 @@ class LowTideApp(App):
         self._macos_now_playing = sys.platform == "darwin"
         self._macos_art_temp_path: str | None = None
 
+        # matugen live-reload state
+        self._matugen_path: str | None = None
+        self._matugen_mtime: float = 0.0
+
     def compose(self) -> ComposeResult:
         with Horizontal(id="main"):
             yield Sidebar(nav=self._nav, id="sidebar-panel")
@@ -362,11 +366,21 @@ class LowTideApp(App):
 
     async def on_mount(self) -> None:
         # matugen theme integration (must run before any UI interaction)
-        from lowtide.matugen_theme import try_load_matugen_theme
+        from lowtide.matugen_theme import (
+            try_load_matugen_theme,
+            _find_matugen_json,
+        )
         matugen_theme = try_load_matugen_theme()
         if matugen_theme is not None:
             self.register_theme(matugen_theme)
             self.theme = "matugen"
+            self._matugen_path = _find_matugen_json()
+            if self._matugen_path:
+                try:
+                    self._matugen_mtime = os.path.getmtime(self._matugen_path)
+                except OSError:
+                    pass
+                self.set_interval(3.0, self._poll_matugen_theme)
 
         try:
             await self.player.start()
@@ -386,6 +400,23 @@ class LowTideApp(App):
         self.set_interval(1.0, self._poll_player)
         # self._restore_queue()
         self._sync_lastfm_counts()
+
+    async def _poll_matugen_theme(self) -> None:
+        if not self._matugen_path or not os.path.isfile(self._matugen_path):
+            return
+        try:
+            mtime = os.path.getmtime(self._matugen_path)
+        except OSError:
+            return
+        if mtime == self._matugen_mtime:
+            return
+        self._matugen_mtime = mtime
+
+        from lowtide.matugen_theme import load_theme_from_file
+        theme = load_theme_from_file(self._matugen_path)
+        if theme is not None:
+            self.register_theme(theme)
+            self.refresh_css()
 
     # --- Player polling ---
 

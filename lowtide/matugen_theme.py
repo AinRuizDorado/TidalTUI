@@ -170,6 +170,45 @@ def build_matugen_theme(flat: dict[str, str], *, dark: bool = True) -> Theme:
 # Public API
 # ---------------------------------------------------------------------------
 
+def _dark_mode() -> bool:
+    return os.environ.get("LOWTIDE_MATUGEN_LIGHT", "").lower() not in (
+        "1", "true", "yes",
+    )
+
+
+def load_theme_from_file(path: str, *, dark: bool | None = None) -> Theme | None:
+    """Build a Textual ``Theme`` from a specific matugen JSON file.
+
+    Args:
+        path: Absolute path to the JSON palette file.
+        dark: If ``None`` (default), the ``LOWTIDE_MATUGEN_LIGHT`` env var
+            is respected; otherwise force dark or light.
+
+    Returns:
+        A ``Theme`` instance or ``None`` on failure (logs at debug level).
+    """
+    if dark is None:
+        dark = _dark_mode()
+
+    try:
+        with open(path) as fh:
+            raw = json.load(fh)
+    except Exception:
+        log.debug("Failed to read %s", path, exc_info=True)
+        return None
+
+    flat = _extract_colors(raw, dark=dark)
+    if flat is None:
+        log.debug("Unrecognised JSON format in %s", path)
+        return None
+
+    try:
+        return build_matugen_theme(flat, dark=dark)
+    except Exception:
+        log.debug("Failed to build matugen theme from %s", path, exc_info=True)
+        return None
+
+
 def try_load_matugen_theme() -> Theme | None:
     """Return a Textual ``Theme`` derived from matugen colours, or ``None``.
 
@@ -190,23 +229,4 @@ def try_load_matugen_theme() -> Theme | None:
         log.debug("no matugen JSON palette found")
         return None
 
-    try:
-        with open(path) as fh:
-            raw = json.load(fh)
-    except Exception:
-        log.debug("Failed to read %s", path, exc_info=True)
-        return None
-
-    dark_mode = os.environ.get("LOWTIDE_MATUGEN_LIGHT", "").lower() not in (
-        "1", "true", "yes",
-    )
-    flat = _extract_colors(raw, dark=dark_mode)
-    if flat is None:
-        log.debug("Unrecognised JSON format in %s", path)
-        return None
-
-    try:
-        return build_matugen_theme(flat, dark=dark_mode)
-    except Exception:
-        log.debug("Failed to build matugen theme from %s", path, exc_info=True)
-        return None
+    return load_theme_from_file(path)
