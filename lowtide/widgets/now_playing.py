@@ -47,13 +47,13 @@ class NowPlayingBar(Widget):
     DEFAULT_CSS = """
     NowPlayingBar {
         dock: bottom;
-        height: 22%;
+        height: 30%;
         background: transparent;
         border-top: tall $primary-darken-2;
         padding: 0 2;
     }
     NowPlayingBar #np-main {
-        height: auto;
+        height: 1fr;
     }
     NowPlayingBar AlbumArt {
         width: 14;
@@ -258,7 +258,7 @@ class NowPlayingBar(Widget):
         self.query_one(AlbumArt).load(url)
 
     def _update_height(self) -> None:
-        base = 22
+        base = 30
         if self._lyrics and self._lyrics_visible:
             base += 8
         if self._eq_visible:
