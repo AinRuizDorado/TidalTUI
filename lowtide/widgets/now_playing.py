@@ -47,7 +47,7 @@ class NowPlayingBar(Widget):
     DEFAULT_CSS = """
     NowPlayingBar {
         dock: bottom;
-        height: 30%;
+        height: 20%;
         background: transparent;
         border-top: tall $primary-darken-2;
         padding: 0 2;
