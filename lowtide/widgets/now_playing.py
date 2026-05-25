@@ -53,11 +53,11 @@ class NowPlayingBar(Widget):
         padding: 0 2;
     }
     NowPlayingBar #np-main {
-        height: 1fr;
+        height: auto;
     }
     NowPlayingBar AlbumArt {
         width: 14;
-        height: 100%;
+        height: 7;
         background: transparent;
     }
     NowPlayingBar #np-info {
