@@ -258,7 +258,7 @@ class NowPlayingBar(Widget):
         self.query_one(AlbumArt).load(url)
 
     def _update_height(self) -> None:
-        base = 30
+        base = 20
         if self._lyrics and self._lyrics_visible:
             base += 8
         if self._eq_visible:
