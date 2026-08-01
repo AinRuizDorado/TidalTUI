@@ -1,0 +1,1082 @@
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+import sys
+from typing import Optional
+
+log = logging.getLogger(__name__)
+
+from textual import work
+from textual.app import App, ComposeResult
+from textual.actions import SkipAction
+from textual.binding import Binding
+from textual.containers import Horizontal
+from textual.widget import Widget
+from textual.widgets import Label, ListItem, ListView, TabbedContent, TabPane
+
+from tidaltui.lyrics import parse_lrc
+from tidaltui.mpris import MPRISService
+from tidaltui.play_count_store import (
+    SHUFFLE_DISCOVERY, SHUFFLE_FAVOURITE, SHUFFLE_LABELS, SHUFFLE_OFF,
+    SHUFFLE_RANDOM, PlayCountStore,
+)
+from tidaltui.player import Player
+from tidaltui.scrobbler import Scrobbler
+from tidaltui.screens.library import LibraryScreen
+from tidaltui.screens.search import SearchScreen
+from tidaltui.tidal_client import TidalClient
+from tidaltui.volume_store import load_volume, save_volume
+from tidaltui.widgets.eq_visualizer import EQVisualizer
+from tidaltui.widgets.now_playing import NowPlayingBar
+
+
+def _now_playing_title(track) -> str:
+    """Format track metadata for mpv's force-media-title (macOS Now Playing)."""
+    artist = getattr(getattr(track, "artist", None), "name", "") or ""
+    title = getattr(track, "name", "") or ""
+    if artist and title:
+        return f"{artist} – {title}"
+    return title or artist or "Unknown"
+
+
+def _try_unlink(path: str) -> None:
+    """Remove a file, ignoring errors."""
+    try:
+        os.unlink(path)
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Sidebar
+# ---------------------------------------------------------------------------
+
+_NAV_BASE = [
+    ("library", "Library"),
+    ("search", "Search"),
+    ("favorites", "Favorites"),
+    ("new-for-you", "New For You"),
+    ("ride-the-tide", "Ride the Tide"),
+    ("genre-radio", "Genre Radio"),
+    ("listening-journey", "Listening Journey"),
+]
+
+
+class Sidebar(Widget):
+    DEFAULT_CSS = """
+    Sidebar {
+        width: 24;
+        height: 100%;
+        background: transparent;
+        border-right: tall $primary-darken-3;
+        padding: 1 0;
+    }
+    Sidebar #app-title {
+        padding: 0 2;
+        text-style: bold;
+        color: $primary;
+        margin-bottom: 1;
+    }
+    Sidebar ListView {
+        background: transparent;
+        height: 1fr;
+    }
+    Sidebar ListItem {
+        padding: 0 2;
+        background: transparent;
+    }
+    """
+
+    def __init__(self, nav: list, **kwargs):
+        super().__init__(**kwargs)
+        self._nav = nav
+
+    def compose(self) -> ComposeResult:
+        yield Label("tidal-tui", id="app-title")
+        with ListView(id="nav"):
+            for key, label in self._nav:
+                item = ListItem(Label(label))
+                item._nav_key = key
+                yield item
+
+    def on_mount(self) -> None:
+        self.query_one(ListView).index = 0
+
+    def select(self, key: str) -> None:
+        lv = self.query_one(ListView)
+        for i, item in enumerate(lv._nodes):
+            if getattr(item, "_nav_key", None) == key:
+                lv.index = i
+                break
+
+    def on_key(self, event) -> None:
+        if event.key == "j":
+            event.stop()
+            self.query_one(ListView).action_cursor_down()
+        elif event.key == "k":
+            event.stop()
+            self.query_one(ListView).action_cursor_up()
+
+
+# ---------------------------------------------------------------------------
+# Content area
+# ---------------------------------------------------------------------------
+
+class ContentArea(Widget):
+    DEFAULT_CSS = """
+    ContentArea {
+        width: 1fr;
+        height: 100%;
+        background: transparent;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        yield LibraryScreen()
+
+    def on_mount(self) -> None:
+        self._stack: list[Widget] = list(self.children)
+
+    async def push(self, widget: Widget) -> None:
+        if self._stack:
+            self._stack[-1].display = False
+        self._stack.append(widget)
+        await self.mount(widget)
+
+    async def pop(self) -> bool:
+        if len(self._stack) > 1:
+            old = self._stack.pop()
+            await old.remove()
+            if self._stack:
+                self._stack[-1].display = True
+            return True
+        return False
+
+    async def replace(self, widget: Widget) -> None:
+        for w in list(self._stack):
+            await w.remove()
+        self._stack = [widget]
+        await self.mount(widget)
+
+    def on_key(self, event) -> None:
+        """Vim-style ``j`` / ``k``: route to the focused widget's cursor
+        actions (falling back to scrolling) so they behave like arrow keys."""
+        action = {"j": "action_cursor_down", "k": "action_cursor_up"}.get(event.key)
+        if action is None:
+            return
+        focused = self.screen.focused if self.screen is not None else None
+        if focused is None:
+            return
+        if hasattr(focused, action):
+            event.stop()
+            getattr(focused, action)()
+        else:
+            fallback = {
+                "action_cursor_down": "action_scroll_down",
+                "action_cursor_up": "action_scroll_up",
+            }[action]
+            if not hasattr(focused, fallback):
+                return
+            try:
+                getattr(focused, fallback)()
+            except SkipAction:
+                return
+            event.stop()
+
+    def cycle_tabs(self, forward: bool) -> bool:
+        """Switch the visible screen's tabbed content to the next/previous
+        pane and focus its first focusable widget, so ``j`` / ``k`` and
+        Enter work immediately after switching. Returns True if cycled."""
+        stack = getattr(self, "_stack", None)
+        if not stack:
+            return False
+        tabs = stack[-1].query_one_optional(TabbedContent)
+        if tabs is None:
+            return False
+        panes = list(tabs.query(TabPane))
+        if len(panes) < 2:
+            return False
+        try:
+            current = panes.index(tabs.active_pane)
+        except ValueError:
+            return False
+        nxt = panes[(current + 1) % len(panes)] if forward else panes[(current - 1) % len(panes)]
+        tabs.active = nxt.id
+        for widget in nxt.query("*"):
+            if getattr(widget, "focusable", False):
+                widget.focus()
+                break
+        return True
+
+
+# ---------------------------------------------------------------------------
+# Queue panel
+# ---------------------------------------------------------------------------
+
+class QueuePanel(Widget):
+    DEFAULT_CSS = """
+    QueuePanel {
+        width: 30;
+        height: 100%;
+        background: transparent;
+        border-left: tall $primary-darken-3;
+        padding: 1;
+        display: none;
+    }
+    QueuePanel #queue-heading {
+        text-style: bold;
+        margin-bottom: 1;
+    }
+    QueuePanel ListView {
+        height: 1fr;
+        background: transparent;
+    }
+    QueuePanel ListItem {
+        background: transparent;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        yield Label("Queue", id="queue-heading")
+        yield ListView(id="queue-list")
+
+    def refresh_queue(self, tracks: list, current_idx: int) -> None:
+        lv = self.query_one(ListView)
+        lv.clear()
+        for i, t in enumerate(tracks):
+            name = getattr(t, "name", "?")
+            artist = getattr(getattr(t, "artist", None), "name", "–")
+            marker = "▶ " if i == current_idx else "  "
+            item = ListItem(Label(f"{marker}[b]{name}[/b]\n[dim]{artist}[/dim]"))
+            item._queue_index = i
+            lv.append(item)
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        idx = getattr(event.item, "_queue_index", None)
+        if idx is not None:
+            asyncio.ensure_future(self.app.jump_to_queue_index(idx))
+
+    def on_key(self, event) -> None:
+        if event.key == "j":
+            event.stop()
+            self.query_one(ListView).action_cursor_down()
+        elif event.key == "k":
+            event.stop()
+            self.query_one(ListView).action_cursor_up()
+
+
+# ---------------------------------------------------------------------------
+# Saved-queue placeholder
+# ---------------------------------------------------------------------------
+
+class _SavedTrack:
+    """
+    Lightweight stand-in populated immediately from queue.json metadata so the
+    UI can be shown before real tidalapi objects are fetched from TIDAL.
+    """
+
+    class _Artist:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+    class _Album:
+        def __init__(self, name: str, art_url: str | None) -> None:
+            self.name = name
+            self._art_url = art_url
+
+        def image(self, size: int = 320) -> str | None:
+            return self._art_url
+
+    def __init__(
+        self,
+        track_id: int | None,
+        name: str,
+        artist_name: str,
+        album_name: str,
+        art_url: str | None,
+    ) -> None:
+        self.id = track_id
+        self.name = name
+        self.artist = self._Artist(artist_name)
+        self.album = self._Album(album_name, art_url)
+        self.duration = 0
+        self.explicit = False
+        self.audio_quality = None
+        self.bpm = None
+
+
+# ---------------------------------------------------------------------------
+# Main App
+# ---------------------------------------------------------------------------
+
+class TidalTUIApp(App):
+    CSS = """
+    Screen {
+        background: transparent;
+        layout: vertical;
+    }
+    #main {
+        layout: horizontal;
+        height: 1fr;
+        background: transparent;
+    }
+    """
+
+    BINDINGS = [
+        Binding("space", "toggle_pause", "Play/Pause"),
+        Binding("n", "next_track", "Next"),
+        Binding("p", "prev_track", "Prev"),
+        Binding("]", "volume_up", "Vol+", show=False),
+        Binding("[", "volume_down", "Vol-", show=False),
+        Binding("s", "toggle_shuffle", "Shuffle"),
+        Binding("r", "toggle_repeat", "Repeat"),
+        Binding("x", "toggle_crossfade", "Crossfade"),
+        Binding("f", "toggle_favourite", "Love"),
+        Binding("q", "toggle_queue", "Queue"),
+        Binding("e", "toggle_eq", "EQ"),
+        Binding("y", "toggle_lyrics", "Lyrics", show=False),
+        Binding("escape", "go_back", "Back", show=False),
+        Binding("ctrl+s", "focus_search", "Search"),
+        Binding("ctrl+l", "focus_library", "Library"),
+        Binding("ctrl+q", "quit", "Quit"),
+        Binding("H", "focus_sidebar", "Sidebar", show=False),
+        Binding("L", "focus_next_panel", "Next Panel", show=False),
+    ]
+
+    def __init__(self, client: TidalClient):
+        super().__init__()
+        self.client = client
+        cfg = client.config
+        _saved_vol = load_volume()
+        self.player = Player(config=cfg, initial_volume=_saved_vol)
+        self.mpris = MPRISService(self)
+        self.scrobbler = Scrobbler(cfg)
+        from tidaltui.tidal_client import CONF_DIR
+        from tidaltui.recommender import Recommender
+        from tidaltui.scrobble_store import ScrobbleStore
+        store_path = os.path.join(CONF_DIR, "playcounts.json")
+        self._play_count_store = PlayCountStore(store_path)
+        self._scrobble_store = ScrobbleStore(os.path.join(CONF_DIR, "scrobbles.json"))
+        self.scrobbler.on_scrobble.append(self._play_count_store.increment)
+        self.recommender = Recommender(
+            network=self.scrobbler._network,
+            store=self._play_count_store,
+            client=client,
+        )
+
+        # Local library – only if music_dir is configured
+        from tidaltui.local_library import LocalLibrary
+        raw = cfg.get("music_dir")
+        if raw:
+            dirs = raw if isinstance(raw, list) else [raw]
+            self._local_library: LocalLibrary | None = LocalLibrary(dirs)
+        else:
+            self._local_library = None
+        self._eq_theme = cfg.get("eq_theme", "mono")
+        self._eq_labels = bool(cfg.get("eq_labels", False))
+        self._nav = list(_NAV_BASE)
+        if self._local_library:
+            self._nav.append(("local", "Local"))
+        self._queue: list = []
+        self._current_idx: int = -1
+        self._queue_gen: int = 0  # incremented on each new enqueue to cancel stale workers
+        self._current_track = None
+        self._current_favourited: bool = False
+        self._target_volume: int = _saved_vol
+        self._crossfading: bool = False
+        self._last_paused: bool | None = None
+        self._ride_the_tide_cache: tuple[list, str | None] | None = None
+
+        # macOS: push track title to mpv's Now Playing widget
+        self._macos_now_playing = sys.platform == "darwin"
+        self._macos_art_temp_path: str | None = None
+
+        # matugen live-reload state
+        self._matugen_path: str | None = None
+        self._matugen_mtime: float = 0.0
+
+    def compose(self) -> ComposeResult:
+        with Horizontal(id="main"):
+            yield Sidebar(nav=self._nav, id="sidebar-panel")
+            yield ContentArea(id="content-panel")
+            yield QueuePanel(id="queue-panel")
+        yield NowPlayingBar()
+
+    async def on_mount(self) -> None:
+        # matugen theme integration (must run before any UI interaction)
+        from tidaltui.matugen_theme import (
+            try_load_matugen_theme,
+            _find_matugen_json,
+        )
+        matugen_theme = try_load_matugen_theme()
+        if matugen_theme is not None:
+            self.register_theme(matugen_theme)
+            self.theme = "matugen"
+            self._matugen_path = _find_matugen_json()
+            if self._matugen_path:
+                try:
+                    self._matugen_mtime = os.path.getmtime(self._matugen_path)
+                except OSError:
+                    pass
+                self.set_interval(3.0, self._poll_matugen_theme)
+
+        try:
+            await self.player.start()
+        except RuntimeError as e:
+            self.notify(str(e), severity="error", timeout=10)
+            return
+        await self.mpris.start()
+        eq = self.query_one(EQVisualizer)
+        eq.set_theme(self._eq_theme)
+        eq._show_labels = self._eq_labels
+        self._target_volume = self.player.volume
+        self.query_one(NowPlayingBar).volume = self._target_volume
+        if self.player.crossfade_secs > 0:
+            self.query_one(NowPlayingBar).crossfade = True
+        self.player.on_track_start.append(self._on_mpv_track_start)
+        self.player.on_track_end.append(self._on_mpv_track_end)
+        self.set_interval(1.0, self._poll_player)
+        # self._restore_queue()
+        self._sync_lastfm_counts()
+
+    async def _poll_matugen_theme(self) -> None:
+        if not self._matugen_path or not os.path.isfile(self._matugen_path):
+            return
+        try:
+            mtime = os.path.getmtime(self._matugen_path)
+        except OSError:
+            return
+        if mtime == self._matugen_mtime:
+            return
+        self._matugen_mtime = mtime
+
+        from tidaltui.matugen_theme import load_theme_from_file
+        theme = load_theme_from_file(self._matugen_path)
+        if theme is not None:
+            self.register_theme(theme)
+            self.refresh_css()
+
+    # --- Player polling ---
+
+    async def _poll_player(self) -> None:
+        bar = self.query_one(NowPlayingBar)
+        position = await self.player.get_position()
+        duration = await self.player.get_duration()
+        paused = await self.player.get_paused()
+        bar.position = position
+        bar.duration = duration
+        bar.paused = paused
+        bar.volume = self._target_volume
+        self.query_one(EQVisualizer).paused = paused
+        self.mpris.update_position(position)
+        self.mpris.update_playback_status(paused)
+        if self._last_paused != paused:
+            self._last_paused = paused
+            self._save_current()
+        self.scrobbler.update(position, duration)
+
+        # Crossfade: fade out as current track approaches its end
+        if self.player.crossfade_secs > 0 and duration > 0 and not paused:
+            remaining = duration - position
+            if 0 < remaining <= self.player.crossfade_secs:
+                fade_vol = max(0, int((remaining / self.player.crossfade_secs) * self._target_volume))
+                await self.player._cmd(["set_property", "volume", fade_vol])
+                self._crossfading = True
+
+    async def _on_mpv_track_end(self) -> None:
+        """Called when a track ends. Handles queue exhaustion in weighted shuffle modes."""
+        mode = self.player.shuffle_mode
+        if mode not in (SHUFFLE_FAVOURITE, SHUFFLE_DISCOVERY):
+            return
+        if not self._queue or self._current_idx < 0:
+            return
+        # Only act when this was the last track — if there are tracks after
+        # current position, mpv will advance to them naturally.
+        if self._current_idx + 1 < len(self._queue):
+            return
+        remaining = [t for i, t in enumerate(self._queue) if i != self._current_idx]
+        if not remaining:
+            return
+        picks = self._play_count_store.weighted_shuffle(
+            remaining, favourite=(mode == SHUFFLE_FAVOURITE)
+        )
+        if picks:
+            await self.jump_to_queue_index(self._queue.index(picks[0]))
+            self.notify("Wrapping queue")
+
+    async def _on_mpv_track_start(self) -> None:
+        # Restore volume after a crossfade fade-out
+        if self._crossfading:
+            self._crossfading = False
+            await self.player.set_volume(self._target_volume)
+
+        pos = await self.player.get_playlist_pos()
+        if 0 <= pos < len(self._queue):
+            self._current_idx = pos
+            track = self._queue[pos]
+            self._set_current_track(track)
+            self.query_one(QueuePanel).refresh_queue(self._queue, self._current_idx)
+            self.scrobbler.track_started(track)
+            self._load_track_extras(track)
+            if self._macos_now_playing:
+                await self._set_mpv_title(_now_playing_title(track))
+                await self._set_macos_album_art(track)
+
+    def _save_current(self) -> None:
+        from tidaltui.tidal_client import CONF_DIR
+        import json as _json
+        try:
+            os.makedirs(CONF_DIR, exist_ok=True)
+            path = os.path.join(CONF_DIR, "current.json")
+            t = self._current_track
+            if t is None:
+                data = {"status": "Stopped"}
+            else:
+                try:
+                    art_url = t.album.image(320)
+                except Exception:
+                    art_url = None
+                data = {
+                    "status": "Playing" if not getattr(self.query_one(NowPlayingBar), 'paused', False) else "Paused",
+                    "id": getattr(t, "id", None),
+                    "name": getattr(t, "name", ""),
+                    "artist": getattr(getattr(t, "artist", None), "name", ""),
+                    "album": getattr(getattr(t, "album", None), "name", ""),
+                    "art_url": art_url,
+                }
+            with open(path, "w") as f:
+                _json.dump(data, f)
+        except Exception:
+            pass
+
+    def _set_current_track(self, track) -> None:
+        self._current_track = track
+        self._current_favourited = False
+        bar = self.query_one(NowPlayingBar)
+        bar.set_track(track)
+        bar.set_lyrics([])   # clear until loaded
+        bar.track_info = ""
+        bar.favourited = False
+        try:
+            art_url = track.album.image(320)
+        except Exception:
+            art_url = None
+        self.query_one(NowPlayingBar).update_art(art_url)
+        self.mpris.update_track(track)
+        self._save_current()
+
+    @work(thread=True)
+    def _load_track_extras(self, track) -> None:
+        """Fetch lyrics and track info in the background."""
+        from tidaltui.local_track import LocalTrack
+        info = self.client.get_track_info(track)
+        if isinstance(track, LocalTrack):
+            lines = []
+        else:
+            _, lrc = self.client.get_lyrics(track)
+            lines = parse_lrc(lrc) if lrc else []
+        self.call_from_thread(self._apply_track_extras, info, lines)
+
+    def _apply_track_extras(self, info: dict, lines: list) -> None:
+        bar = self.query_one(NowPlayingBar)
+        bar.set_track_info(info)
+        bar.set_lyrics(lines)
+        self.query_one(EQVisualizer).set_bpm(info.get("bpm"))
+
+    # --- Public: enqueue & play ---
+
+    def enqueue_and_play(self, tracks: list, start_index: int = 0) -> None:
+        # Rotate so the selected track is at position 0, matching mpv's playlist order.
+        # self._queue[N] will always equal mpv playlist position N.
+        rotated = tracks[start_index:] + tracks[:start_index]
+        mode = self.player.shuffle_mode
+        if mode != SHUFFLE_OFF:
+            import random
+            first = rotated[:1]
+            rest = rotated[1:]
+            if mode == SHUFFLE_RANDOM:
+                random.shuffle(rest)
+            elif mode == SHUFFLE_FAVOURITE:
+                rest = self._play_count_store.weighted_shuffle(rest, favourite=True)
+            elif mode == SHUFFLE_DISCOVERY:
+                rest = self._play_count_store.weighted_shuffle(rest, favourite=False)
+            rotated = first + rest
+        self._queue = rotated
+        self._current_idx = 0
+        self._queue_gen += 1
+        asyncio.ensure_future(self.player.stop())
+        self._load_queue(rotated, self._queue_gen)
+
+    def append_to_queue(self, tracks: list) -> None:
+        if not self._queue:
+            # Nothing playing yet – just start playback
+            self.enqueue_and_play(tracks)
+            return
+        self._queue.extend(tracks)
+        self.query_one(QueuePanel).refresh_queue(self._queue, self._current_idx)
+        self._append_tracks(tracks, self._queue_gen)
+        count = len(tracks)
+        label = tracks[0].name if count == 1 else f"{count} tracks"
+        self.notify(f"Added {label} to queue")
+
+    @work(thread=True)
+    def _load_queue(self, tracks: list, gen: int) -> None:
+        import time
+        from tidalapi.exceptions import TooManyRequests
+        for i, track in enumerate(tracks):
+            if self._queue_gen != gen:
+                return
+            try:
+                url = self.client.get_track_url(track)
+            except TooManyRequests as e:
+                wait = e.retry_after
+                msg = (
+                    f"TIDAL rate limit – try again in {wait}s"
+                    if wait > 0
+                    else "TIDAL rate limit – try again in a moment"
+                )
+                self.call_from_thread(lambda m=msg: self.notify(m, severity="error", timeout=12))
+                return
+            if not url or self._queue_gen != gen:
+                continue
+
+            if i == 0:
+                self.call_from_thread(self._play_if_current, url, gen, track)
+            else:
+                self.call_from_thread(self._append_if_current, url, gen)
+                # Buffer first 3 tracks quickly; throttle the rest to avoid rate limits
+                time.sleep(0.15 if i < 3 else 0.5)
+        if self._queue_gen == gen:
+            self.call_from_thread(
+                lambda: self.query_one(QueuePanel).refresh_queue(self._queue, self._current_idx)
+            )
+
+    def _play_if_current(self, url: str, gen: int, track) -> None:
+        if self._queue_gen != gen:
+            return
+        asyncio.ensure_future(self.player.play(url))
+        self._set_current_track(track)
+
+    def _append_if_current(self, url: str, gen: int) -> None:
+        if self._queue_gen == gen:
+            asyncio.ensure_future(self.player.append(url))
+
+    @work(thread=True)
+    def _append_tracks(self, tracks: list, gen: int) -> None:
+        import time
+        from tidalapi.exceptions import TooManyRequests
+        for track in tracks:
+            if self._queue_gen != gen:
+                return
+            try:
+                url = self.client.get_track_url(track)
+            except TooManyRequests as e:
+                wait = e.retry_after
+                msg = (
+                    f"TIDAL rate limit – try again in {wait}s"
+                    if wait > 0
+                    else "TIDAL rate limit – try again in a moment"
+                )
+                self.call_from_thread(lambda m=msg: self.notify(m, severity="error", timeout=12))
+                return
+            if url:
+                self.call_from_thread(self._append_if_current, url, gen)
+                time.sleep(0.3)
+
+    def on_track_list_track_append_requested(self, event) -> None:
+        self.append_to_queue([event.track])
+
+    async def jump_to_queue_index(self, idx: int) -> None:
+        """Skip playback to a specific queue position."""
+        if 0 <= idx < len(self._queue):
+            await self.player._cmd(["set_property", "playlist-pos", idx])
+            # If mpv went idle after the playlist ended, the above restores the
+            # position but leaves it paused — ensure playback actually starts.
+            await self.player._cmd(["set_property", "pause", False])
+
+    # --- Open objects (albums, artists, mixes, playlists) by type ---
+
+    async def open_object(self, obj) -> None:
+        """Route any tidalapi object to the appropriate screen."""
+        from tidaltui.screens.album import AlbumScreen
+        from tidaltui.screens.artist import ArtistScreen
+        from tidaltui.screens.playlist import PlaylistScreen
+
+        type_name = type(obj).__name__.lower()
+
+        if "album" in type_name:
+            await self.push_view(AlbumScreen(obj))
+        elif "artist" in type_name:
+            await self.push_view(ArtistScreen(obj))
+        elif "playlist" in type_name or "userplaylist" in type_name:
+            await self.push_view(PlaylistScreen(obj))
+        elif "mix" in type_name:
+            await self.push_view(PlaylistScreen(obj, autoplay=True))
+        else:
+            await self.push_view(PlaylistScreen(obj))
+
+    # --- Navigation ---
+
+    async def push_view(self, widget: Widget) -> None:
+        await self.query_one(ContentArea).push(widget)
+
+    async def action_go_back(self) -> None:
+        await self.query_one(ContentArea).pop()
+
+    async def _switch_root(self, widget: Widget, nav_key: str) -> None:
+        await self.query_one(ContentArea).replace(widget)
+        self.query_one(Sidebar).select(nav_key)
+
+    async def action_focus_search(self) -> None:
+        await self._switch_root(SearchScreen(), "search")
+
+    async def action_focus_library(self) -> None:
+        await self._switch_root(LibraryScreen(), "library")
+
+    def action_focus_sidebar(self) -> None:
+        """Focus the previous widget in tab order (``shift+h``)."""
+        self.screen.focus_previous()
+
+    def action_focus_next_panel(self) -> None:
+        """Focus the next widget in tab order (``shift+l``)."""
+        self.screen.focus_next()
+
+    def on_key(self, event) -> None:
+        """Vim-style ``h`` / ``l``: cycle the current screen's tab panes no
+        matter where focus is (sidebar, queue, content, tab bar). Printable
+        keys typed into text inputs never reach this handler because the
+        Input widget stops them first."""
+        if event.key in ("h", "l"):
+            if self.query_one(ContentArea).cycle_tabs(forward=event.key == "l"):
+                event.stop()
+
+    async def on_list_view_selected(self, event: ListView.Selected) -> None:
+        key = getattr(event.item, "_nav_key", None)
+        if key and event.list_view.id == "nav":
+            if key == "library":
+                await self.action_focus_library()
+            elif key == "search":
+                await self.action_focus_search()
+            elif key == "favorites":
+                await self._open_favorites()
+            elif key == "new-for-you":
+                await self._open_new_for_you()
+            elif key == "ride-the-tide":
+                await self._open_ride_the_tide()
+            elif key == "genre-radio":
+                await self._open_genre_radio()
+            elif key == "listening-journey":
+                await self._open_journey()
+            elif key == "local":
+                await self._open_local()
+
+    async def _open_journey(self) -> None:
+        from tidaltui.screens.journey import JourneyScreen
+        await self._switch_root(JourneyScreen(), "listening-journey")
+
+    async def _open_favorites(self) -> None:
+        from tidaltui.screens.favorites import FavoritesScreen
+        await self._switch_root(FavoritesScreen(), "favorites")
+
+    async def _open_new_for_you(self) -> None:
+        from tidaltui.screens.new_for_you import NewForYouScreen
+        await self._switch_root(NewForYouScreen(), "new-for-you")
+
+    async def _open_ride_the_tide(self) -> None:
+        from tidaltui.screens.radio import RadioScreen
+        await self._switch_root(RadioScreen(cached=self._ride_the_tide_cache), "ride-the-tide")
+
+    async def on_track_list_track_radio_requested(self, event) -> None:
+        from tidaltui.screens.radio import RadioScreen
+        await self.push_view(RadioScreen(seed_track=event.track))
+
+    async def _open_genre_radio(self) -> None:
+        from tidaltui.screens.genre import GenreScreen
+        await self._switch_root(GenreScreen(), "genre-radio")
+
+    async def _open_local(self) -> None:
+        from tidaltui.screens.local import LocalLibraryScreen
+        if self._local_library:
+            await self._switch_root(LocalLibraryScreen(self._local_library), "local")
+
+    # --- Playback actions ---
+
+    async def action_toggle_crossfade(self) -> None:
+        if self.player.crossfade_secs > 0:
+            self.player.crossfade_secs = 0
+            self.query_one(NowPlayingBar).crossfade = False
+            self.notify("Crossfade off")
+        else:
+            cfg = self.client.config
+            secs = int(cfg.get("crossfade", 5))
+            self.player.crossfade_secs = max(1, secs)
+            self.query_one(NowPlayingBar).crossfade = True
+            self.notify(f"Crossfade {self.player.crossfade_secs}s")
+
+    async def action_toggle_shuffle(self) -> None:
+        self.player.shuffle_mode = (self.player.shuffle_mode + 1) % 4
+        mode = self.player.shuffle_mode
+        self.query_one(NowPlayingBar).shuffle_mode = mode
+        self.mpris.update_shuffle(mode != SHUFFLE_OFF)
+        self.notify(f"Shuffle: {SHUFFLE_LABELS[mode]}")
+
+    async def action_toggle_repeat(self) -> None:
+        await self.player.toggle_repeat()
+        self.query_one(NowPlayingBar).repeat = self.player.repeat
+        self.mpris.update_loop_status(self.player.repeat)
+        state = "on" if self.player.repeat else "off"
+        self.notify(f"Repeat {state}")
+
+    @work(thread=True)
+    def action_toggle_favourite(self) -> None:
+        if self._current_track is None:
+            return
+        track_id = getattr(self._current_track, "id", None)
+        if track_id is None:
+            return
+        if self._current_favourited:
+            ok = self.client.remove_favourite_track(track_id)
+            if ok:
+                self._current_favourited = False
+                self.call_from_thread(self._apply_favourite_state, False, "Removed from favourites")
+        else:
+            ok = self.client.add_favourite_track(track_id)
+            if ok:
+                self._current_favourited = True
+                self.call_from_thread(self._apply_favourite_state, True, "Added to favourites")
+
+    def _apply_favourite_state(self, state: bool, message: str) -> None:
+        self.query_one(NowPlayingBar).favourited = state
+        self.notify(message)
+
+    async def action_toggle_pause(self) -> None:
+        await self.player.toggle_pause()
+
+    async def _set_mpv_title(self, title: str) -> None:
+        """Set force-media-title via mpv IPC (macOS Now Playing widget)."""
+        await self.player._cmd(["set_property", "force-media-title", title])
+
+    async def _set_macos_album_art(self, track) -> None:
+        """Download album art and add as external video track for macOS Now Playing.
+
+        mpv v0.41.0+ detects external image tracks in the track list and
+        populates MPMediaItemPropertyArtwork in MPNowPlayingInfoCenter.
+        """
+        if not self._macos_now_playing:
+            return
+
+        try:
+            art_url = track.album.image(320)
+        except Exception:
+            return
+        if not art_url:
+            return
+
+        path = await asyncio.get_running_loop().run_in_executor(
+            None, self._download_album_art, art_url,
+        )
+        if not path:
+            return
+
+        # Track may have advanced while we were downloading
+        if self._current_track is not track:
+            _try_unlink(path)
+            return
+
+        # Clean up previous temp file
+        self._cleanup_macos_art_temp()
+        self._macos_art_temp_path = path
+
+        # Add the cover as an external video track. mpv's macOS backend
+        # detects external image tracks in the track list and forwards
+        # them to MPNowPlayingInfoCenter.
+        #
+        # Suppress the floating window BEFORE adding the track: on macOS
+        # video-add creates a visible window despite --no-video; setting
+        # vid=no first prevents it from ever appearing.
+        # (Also see --vo=null in player.py, which prevents window creation
+        # at the VO level regardless.)
+        await self.player._cmd(["set_property", "vid", "no"])
+        await self.player._cmd(["video-add", path])
+
+    def _download_album_art(self, url: str) -> str | None:
+        """Return local path to downloaded album art, or None."""
+        import tempfile
+
+        import requests
+
+        try:
+            resp = requests.get(url, timeout=10)
+            resp.raise_for_status()
+            fd, path = tempfile.mkstemp(suffix=".jpg", prefix="tidaltui-art-")
+            os.close(fd)
+            with open(path, "wb") as f:
+                f.write(resp.content)
+            return path
+        except Exception:
+            return None
+
+    def _cleanup_macos_art_temp(self) -> None:
+        if self._macos_art_temp_path:
+            _try_unlink(self._macos_art_temp_path)
+            self._macos_art_temp_path = None
+
+    async def action_next_track(self) -> None:
+        mode = self.player.shuffle_mode
+        if mode in (SHUFFLE_FAVOURITE, SHUFFLE_DISCOVERY) and self._current_idx >= 0 and self._queue:
+            remaining = self._queue[self._current_idx + 1:]
+            if not remaining:
+                remaining = [t for i, t in enumerate(self._queue) if i != self._current_idx]
+                self.notify("Wrapping queue")
+            if remaining:
+                picks = self._play_count_store.weighted_shuffle(
+                    remaining, favourite=(mode == SHUFFLE_FAVOURITE)
+                )
+                if picks:
+                    await self.jump_to_queue_index(self._queue.index(picks[0]))
+                    return
+        await self.player.next()
+
+    async def action_prev_track(self) -> None:
+        await self.player.prev()
+
+    async def action_volume_up(self) -> None:
+        self._target_volume = min(100, self._target_volume + 5)
+        await self.player.set_volume(self._target_volume)
+        self.mpris.update_volume(self._target_volume)
+        save_volume(self._target_volume)
+
+    async def action_volume_down(self) -> None:
+        self._target_volume = max(0, self._target_volume - 5)
+        await self.player.set_volume(self._target_volume)
+        self.mpris.update_volume(self._target_volume)
+        save_volume(self._target_volume)
+
+    async def action_toggle_queue(self) -> None:
+        panel = self.query_one(QueuePanel)
+        panel.display = not panel.display
+
+    async def action_toggle_eq(self) -> None:
+        self.query_one(NowPlayingBar).toggle_eq()
+
+    def action_toggle_lyrics(self) -> None:
+        self.query_one(NowPlayingBar).toggle_lyrics()
+
+    def _save_queue(self) -> None:
+        from tidaltui.tidal_client import CONF_DIR
+        import json as _json
+        if not self._queue:
+            return
+        try:
+            os.makedirs(CONF_DIR, exist_ok=True)
+            path = os.path.join(CONF_DIR, "queue.json")
+            tracks = []
+            for t in self._queue:
+                try:
+                    art_url = t.album.image(320)
+                except Exception:
+                    art_url = None
+                tracks.append({
+                    "id": getattr(t, "id", None),
+                    "name": getattr(t, "name", ""),
+                    "artist": getattr(getattr(t, "artist", None), "name", ""),
+                    "album": getattr(getattr(t, "album", None), "name", ""),
+                    "art_url": art_url,
+                })
+            data = {"tracks": tracks, "current_idx": self._current_idx}
+            with open(path, "w") as f:
+                _json.dump(data, f)
+        except Exception:
+            pass
+
+    @work(thread=True)
+    def _restore_queue(self) -> None:
+        from tidaltui.tidal_client import CONF_DIR
+        import json as _json
+        path = os.path.join(CONF_DIR, "queue.json")
+        try:
+            with open(path) as f:
+                data = _json.load(f)
+        except Exception:
+            return
+
+        saved_idx = data.get("current_idx", 0)
+
+        # Support both new format (tracks[]) and old format (track_ids[])
+        raw = data.get("tracks")
+        if raw:
+            placeholders = [
+                _SavedTrack(
+                    t.get("id"),
+                    t.get("name", ""),
+                    t.get("artist", ""),
+                    t.get("album", ""),
+                    t.get("art_url"),
+                )
+                for t in raw
+            ]
+            track_ids = [t.get("id") for t in raw if t.get("id") is not None]
+        else:
+            # Legacy format
+            track_ids = [i for i in data.get("track_ids", []) if i is not None]
+            placeholders = [_SavedTrack(tid, f"Track {tid}", "", "", None) for tid in track_ids]
+
+        if not track_ids:
+            return
+
+        # Show the queue immediately from saved metadata — no TIDAL calls yet
+        self.call_from_thread(self._show_restored_ui, placeholders, saved_idx)
+
+        # Fetch real track objects in the background for playback
+        tracks = []
+        for tid in track_ids:
+            try:
+                tracks.append(self.client.session.track(tid))
+            except Exception:
+                pass
+        if tracks:
+            self.call_from_thread(self._apply_restored_queue, tracks, saved_idx)
+
+    def _show_restored_ui(self, placeholders: list, current_idx: int) -> None:
+        """Populate the UI immediately from saved metadata before playback is ready."""
+        self._queue = placeholders
+        self._current_idx = current_idx
+        panel = self.query_one(QueuePanel)
+        panel.refresh_queue(placeholders, current_idx)
+        panel.display = True
+        if 0 <= current_idx < len(placeholders):
+            track = placeholders[current_idx]
+            bar = self.query_one(NowPlayingBar)
+            bar.track_name = track.name
+            bar.artist_name = track.artist.name
+            try:
+                art_url = track.album.image(320)
+                self.query_one(NowPlayingBar).update_art(art_url)
+            except Exception:
+                pass
+
+    def _apply_restored_queue(self, tracks: list, current_idx: int) -> None:
+        self.notify(f"Restored queue ({len(tracks)} tracks)", timeout=3)
+        self.enqueue_and_play(tracks, start_index=current_idx)
+
+    @work(thread=True)
+    def _sync_lastfm_counts(self) -> None:
+        if not self.scrobbler.enabled:
+            return
+        cfg = self.client.config.get("lastfm", {})
+        username = cfg.get("username", "")
+        if not username:
+            return
+        n = self._play_count_store.sync_lastfm(self.scrobbler._network, username)
+        if n:
+            log.debug("Last.fm play count sync: %d tracks", n)
+
+    async def on_unmount(self) -> None:
+        save_volume(self._target_volume)
+        self._save_queue()
+        self._play_count_store.save()
+        self._cleanup_macos_art_temp()
+        await self.mpris.stop()
+        await self.player.shutdown()

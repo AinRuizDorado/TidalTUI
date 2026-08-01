@@ -8,4 +8,4 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.x"
-      - run: python -m py_compile $(find lowtide -name "*.py")
+      - run: python -m py_compile $(find tidaltui -name "*.py")

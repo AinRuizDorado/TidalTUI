@@ -1,15 +1,15 @@
-# low-tide
+# tidal-tui
 
 A terminal UI client for [TIDAL](https://tidal.com), built with Python. Browse your library, search, and play music without leaving the terminal – album art included.
 
 ![Python](https://img.shields.io/badge/python-3.11+-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-![low-tide screenshot](assets/screenshot_eq.png)
+![tidal-tui screenshot](assets/screenshot_eq.png)
 
-![low-tide Ride the Tide](assets/screenshot_2.png)
+![tidal-tui Ride the Tide](assets/screenshot_2.png)
 
-> **Disclaimer:** low-tide is an independent, unofficial project. It is not affiliated with, endorsed by, or supported by TIDAL Music AS. It uses the unofficial [tidalapi](https://github.com/tamland/python-tidal) library to access TIDAL's API. Use at your own risk – this may break if TIDAL changes their API, and use of unofficial API access may violate TIDAL's terms of service.
+> **Disclaimer:** tidal-tui is an independent, unofficial project. It is not affiliated with, endorsed by, or supported by TIDAL Music AS. It uses the unofficial [tidalapi](https://github.com/tamland/python-tidal) library to access TIDAL's API. Use at your own risk – this may break if TIDAL changes their API, and use of unofficial API access may violate TIDAL's terms of service.
 
 ---
 
@@ -72,7 +72,7 @@ A terminal UI client for [TIDAL](https://tidal.com), built with Python. Browse y
 
 ## Requirements
 
-**low-tide is Linux-only.** It relies on Unix sockets for mpv IPC, D-Bus for MPRIS, and the kitty graphics protocol for album art. macOS and Windows are not supported.
+**tidal-tui is Linux-only.** It relies on Unix sockets for mpv IPC, D-Bus for MPRIS, and the kitty graphics protocol for album art. macOS and Windows are not supported.
 
 - **Python 3.11+**
 - **A TIDAL subscription** (HiFi or higher recommended for lossless playback)
@@ -92,12 +92,12 @@ sudo apt install mpv
 ## Installation
 
 ```bash
-git clone https://github.com/pauljhdrake/low-tide.git
-cd low-tide
+git clone https://github.com/pauljhdrake/tidal-tui.git
+cd tidal-tui
 pip install .
 ```
 
-This installs all Python dependencies and adds a `low-tide` command to your PATH. A virtual environment is recommended:
+This installs all Python dependencies and adds a `tidal-tui` command to your PATH. A virtual environment is recommended:
 
 ```bash
 python -m venv .venv
@@ -115,28 +115,28 @@ pip install -e .
 ## Running
 
 ```bash
-low-tide
+tidal-tui
 ```
 
-On first launch you will be prompted to authenticate with TIDAL via a device-code login – a URL is printed, open it in your browser and follow the prompts. Tokens are saved to `~/.config/low-tide/session.json` and reused on future launches.
+On first launch you will be prompted to authenticate with TIDAL via a device-code login – a URL is printed, open it in your browser and follow the prompts. Tokens are saved to `~/.config/tidal-tui/session.json` and reused on future launches.
 
 ## Authentication and Token Handling
 
-low-tide uses TIDAL's OAuth 2.0 device-code flow. Your TIDAL password is never seen or stored by this app – you authenticate directly with TIDAL in your browser.
+tidal-tui uses TIDAL's OAuth 2.0 device-code flow. Your TIDAL password is never seen or stored by this app – you authenticate directly with TIDAL in your browser.
 
 After login, TIDAL issues an access token and a refresh token. These are stored **locally on your machine** at:
 
 ```
-~/.config/low-tide/session.json
+~/.config/tidal-tui/session.json
 ```
 
 This file:
-- is never read by anything other than low-tide on your machine
+- is never read by anything other than tidal-tui on your machine
 - is excluded from the repository via `.gitignore` and will never be committed
 - contains no password – only the OAuth tokens issued by TIDAL
 - can be revoked at any time by contacting TIDAL support or deleting the file (you will be prompted to re-authenticate on next launch)
 
-The source code for token handling is in [`lowtide/tidal_client.py`](lowtide/tidal_client.py) if you want to inspect it.
+The source code for token handling is in [`tidaltui/tidal_client.py`](tidaltui/tidal_client.py) if you want to inspect it.
 
 ## Keybindings
 
@@ -178,21 +178,21 @@ Press `s` to cycle through four modes. The active mode is shown in the now-playi
 | `★` | Favourites | Tracks you've played more appear earlier |
 | `⊕` | Discovery | Tracks you've played least (or never) appear earlier |
 
-Shuffle modes are driven by a local play count store at `~/.config/low-tide/playcounts.json`, built from three sources:
+Shuffle modes are driven by a local play count store at `~/.config/tidal-tui/playcounts.json`, built from three sources:
 
 - **Local scrobbles** – incremented automatically each time you listen past 50% of a track
 - **Last.fm** – if Last.fm is configured, your all-time top tracks are synced at startup
 - **Spotify import** – if you're moving from Spotify, run:
 
 ```bash
-low-tide import-spotify ~/path/to/your/spotify-data/
+tidal-tui import-spotify ~/path/to/your/spotify-data/
 ```
 
 To get your data: go to [spotify.com](https://spotify.com) → Account → Privacy settings → Request data download. You'll receive an email with a zip file — extract it and pass the folder path to the command above. Only streams over 30 seconds count, matching the scrobbling threshold used elsewhere.
 
 ## Transparency
 
-low-tide uses transparent backgrounds throughout. For the full effect with your desktop wallpaper showing through, enable background opacity in kitty:
+tidal-tui uses transparent backgrounds throughout. For the full effect with your desktop wallpaper showing through, enable background opacity in kitty:
 
 ```ini
 # ~/.config/kitty/kitty.conf
@@ -201,7 +201,7 @@ background_opacity 0.85
 
 ## Configuration
 
-Create `~/.config/low-tide/config.json` to override defaults:
+Create `~/.config/tidal-tui/config.json` to override defaults:
 
 ```json
 {
@@ -252,13 +252,13 @@ Example for bit-perfect TIDAL MAX output:
 
 ## Matugen theme integration
 
-low-tide can automatically apply your [matugen](https://github.com/InioX/matugen)
+tidal-tui can automatically apply your [matugen](https://github.com/InioX/matugen)
 Material You color scheme on startup. If matugen is installed and a generated
 palette is found, the entire UI theme is derived from your wallpaper colors.
 
 ### How it works
 
-At startup, low-tide scans the following directories for a matugen JSON palette
+At startup, tidal-tui scans the following directories for a matugen JSON palette
 (choosing the most recently modified file):
 
 - `~/.local/state/quickshell/generated/`
@@ -270,7 +270,7 @@ supported.
 
 ### Custom palette path
 
-If your palette lives elsewhere, specify it in `~/.config/low-tide/config.json`:
+If your palette lives elsewhere, specify it in `~/.config/tidal-tui/config.json`:
 
 ```json
 {
@@ -284,7 +284,7 @@ By default the dark variant of the palette is used. To force light mode, set
 the environment variable:
 
 ```sh
-LOWTIDE_MATUGEN_LIGHT=1 low-tide
+TIDAL_TUI_MATUGEN_LIGHT=1 tidal-tui
 ```
 
 ### Color mapping
@@ -306,7 +306,7 @@ Textual automatically generates the variants (`$primary-darken-1`,
 
 ### No matugen?
 
-If matugen is not installed or no palette is found, low-tide falls back to
+If matugen is not installed or no palette is found, tidal-tui falls back to
 the default Textual theme — no configuration or error messages.
 
 ## Known Limitations
@@ -319,7 +319,7 @@ the default Textual theme — no configuration or error messages.
 ## Project Structure
 
 ```
-lowtide/
+tidaltui/
   main.py              # entry point
   tidal_client.py      # tidalapi wrapper
   player.py            # mpv IPC control

@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "skills": {
+    "python-testing-patterns": {
+      "source": "wshobson/agents",
+      "sourceType": "github",
+      "skillPath": "plugins/python-development/skills/python-testing-patterns/SKILL.md",
+      "computedHash": "1306eea409e7eff2288d7658806cb508f18339a0ee9a686d324a0fd2570eae55"
+    },
+    "textual": {
+      "source": "johnlarkin1/claude-code-extensions",
+      "sourceType": "github",
+      "skillPath": "skills/textual/SKILL.md",
+      "computedHash": "ca9df5bc8ff1a7165b3bf7ef70abd6ecae14c1fdbeb81921b1469f7b51519330"
+    }
+  }
+}

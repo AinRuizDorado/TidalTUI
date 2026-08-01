@@ -7,8 +7,8 @@ Usage:
 
 Fetches an RSS feed, lets you pick an episode, extracts the track list from
 the show notes ('Title' by Artist lines in a <ul>), resolves each track on
-TIDAL, and creates a playlist. Requires an active low-tide session
-(~/.config/low-tide/session.json).
+TIDAL, and creates a playlist. Requires an active tidal-tui session
+(~/.config/tidal-tui/session.json).
 """
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ from pathlib import Path
 # Allow running from the repo root without installing
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from lowtide.tidal_client import TidalClient
+from tidaltui.tidal_client import TidalClient
 
 
 # ── HTML parsing ──────────────────────────────────────────────────────────────
@@ -110,7 +110,7 @@ def _parse_track_line(text: str) -> tuple[str, str] | None:
 def _fetch_feed(url: str) -> tuple[str, list[dict]]:
     """Return (show_title, episodes) where episodes are newest-first dicts."""
     print("Fetching feed…")
-    req = urllib.request.Request(url, headers={"User-Agent": "low-tide/1.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": "tidal-tui/1.0"})
     with urllib.request.urlopen(req, timeout=15) as resp:
         raw = resp.read()
 
