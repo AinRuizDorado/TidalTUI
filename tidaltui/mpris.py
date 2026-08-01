@@ -300,7 +300,6 @@ class MPRISService:
             return
         try:
             from dbus_next.message import Message
-            from dbus_next import MessageType
             msg = Message.new_signal(
                 MPRIS_OBJECT_PATH,
                 "org.freedesktop.DBus.Properties",
@@ -308,9 +307,9 @@ class MPRISService:
                 "sa{sv}as",
                 ["org.mpris.MediaPlayer2.Player", changed, []],
             )
-            self._bus.send_message(msg)
-        except Exception:
-            pass
+            self._bus.send(msg)
+        except Exception as e:
+            log.warning("Failed to emit MPRIS property changes: %s", e)
 
     async def stop(self) -> None:
         if self._bus:

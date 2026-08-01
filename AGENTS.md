@@ -91,7 +91,7 @@ Four modes toggled by `s` (constants in `play_count_store.py`): `SHUFFLE_OFF`, `
 
 ## MPRIS
 
-`MPRISService` (mpris.py) exposes `org.mpris.MediaPlayer2.tidal-tui` with dbus-next; player actions are thin wrappers scheduling app callbacks; properties are updated via hand-sent `PropertiesChanged` signals (dbus-next's `emit_properties_changed` is not used). `Seek` converts the relative microsecond offset against the tracked position; `SetPosition` ignores stale requests for a non-current track. Art URL embedded in `Metadata` as `mpris:artUrl`. macOS-only quirks: `--vo=null` + video-add of downloaded art to feed the Now Playing widget.
+`MPRISService` (mpris.py) exposes `org.mpris.MediaPlayer2.tidal-tui` with dbus-next; player actions are thin wrappers scheduling app callbacks; properties are updated via hand-sent `PropertiesChanged` signals — built with `Message.new_signal` and sent through `self._bus.send(msg)` (dbus-next has NO `send_message`; calling it raised AttributeError that was silently swallowed, so no signals ever reached the bus and MPRIS clients froze on the initial GetAll snapshot — actual bug fixed). `Seek` converts the relative microsecond offset against the tracked position; `SetPosition` ignores stale requests for a non-current track. Art URL embedded in `Metadata` as `mpris:artUrl`. macOS-only quirks: `--vo=null` + video-add of downloaded art to feed the Now Playing widget.
 
 ## Widgets
 
