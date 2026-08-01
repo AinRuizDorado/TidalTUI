@@ -19,6 +19,11 @@ MPV_BASE_ARGS = [
     "--really-quiet",
     "--prefetch-playlist=yes",
     "--gapless-audio=yes",
+    # Hi-res tracks are DASH: a local .mpd manifest whose segments are fetched
+    # over https. ffmpeg's demuxer only allows file/crypto/data by default for
+    # local manifests, so https/tls/tcp must be whitelisted. Harmless for the
+    # direct stream URLs used by lossless and below.
+    "--demuxer-lavf-o=protocol_whitelist=[file,crypto,data,https,tls,tcp]",
 ]
 
 

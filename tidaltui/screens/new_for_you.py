@@ -49,7 +49,7 @@ class NewForYouScreen(Widget):
     @work(thread=True)
     def _load(self) -> None:
         try:
-            home = self.app.client.session.home()
+            home = self.app.client.get_home()
             tracks = []
             albums = []
             for cat in getattr(home, "categories", []):

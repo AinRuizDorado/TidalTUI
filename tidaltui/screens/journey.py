@@ -381,7 +381,7 @@ class JourneyScreen(Widget):
             )
         )
         try:
-            results = self.app.client.session.search(name, limit=5)
+            results = self.app.client.search(name, limit=5)
             artists = results.get("artists") or []
             match = next(
                 (a for a in artists if getattr(a, "name", "").lower() == name.lower()),
@@ -408,7 +408,7 @@ class JourneyScreen(Widget):
             )
         )
         try:
-            results = self.app.client.session.search(name, limit=5)
+            results = self.app.client.search(name, limit=5)
             artists = results.get("artists") or []
             artist = next(
                 (a for a in artists if getattr(a, "name", "").lower() == name.lower()),

@@ -70,7 +70,7 @@ class LibraryScreen(Widget):
     @work(thread=True)
     def _load_foryou(self) -> None:
         try:
-            page = self.app.client.session.for_you()
+            page = self.app.client.get_for_you()
             items = []
             for cat in getattr(page, "categories", []):
                 for obj in getattr(cat, "items", []):
@@ -98,7 +98,7 @@ class LibraryScreen(Widget):
     @work(thread=True)
     def _load_mixes(self) -> None:
         try:
-            mixes = self.app.client.session.mixes().categories
+            mixes = self.app.client.get_mixes().categories
             items = []
             for cat in mixes:
                 for obj in getattr(cat, "items", []):

@@ -14,7 +14,14 @@
 
 `main.py` → `TidalClient` (OAuth device-code login, tokens in `~/.config/tidal-tui/session.json`) → `TidalTUIApp(client).run()`. Subcommand: `tidal-tui import-spotify <dir>` imports Spotify GDPR history into the play-count store.
 
-Config: `~/.config/tidal-tui/config.json` (`quality`, `music_dir`, `replaygain`, `alsa_*`, `crossfade`, `eq_theme`, `eq_labels`, `lastfm`, `matugen_colors_file`). See README.md for details.
+Config: `~/.config/tidal-tui/config.json` (`quality`, `music_dir`, `replaygain`, `alsa_*`, `crossfade`, `eq_theme`, `eq_labels`, `background`, `lastfm`, `matugen_colors_file`). See README.md for details.
+
+## Remotes
+
+- `origin` = https://github.com/AinRuizDorado/TidalTUI.git (this fork)
+- `upstream` = https://github.com/pauljhdrake/low-tide.git (upstream source)
+
+When integrating upstream changes, diff content per-module (upstream still tracks the `lowtide/` dir; this repo uses `tidaltui/`) rather than cherry-picking, since the histories diverged. See `git diff upstream/main:lowtide/<f> tidaltui/<f>`.
 
 ## Git workflow
 
@@ -57,10 +64,15 @@ The design goal: `hjkl` behave vim-like **everywhere**, regardless of focus:
 
 ## Playback & queue
 
-- `Player` (player.py) manages the mpv subprocess + JSON IPC (`/tmp/tidaltui-mpv.sock`). Requests are matched by `request_id` to futures; `on_track_start`/`on_track_end` callbacks fire on `file-loaded`/`end-file` events. mpv args include `--prefetch-playlist=yes`, `--gapless-audio=yes`, replaygain, and optional ALSA output.
-- `TidalTUIApp.enqueue_and_play(tracks, start_index)` rotates the list so the selected track is index 0, applies the active shuffle mode (see below), sets `self._queue`, then `_load_queue` (a worker thread) resolves URLs one-by-one, playing the first and appending the rest (rate-limit-aware; sleeps 0.15–0.5 s between calls, aborts when `_queue_gen` changes). The queue panel shows `▶` on the current track; `a` appends, `A` appends all.
+- `Player` (player.py) manages the mpv subprocess + JSON IPC (`/tmp/tidaltui-mpv.sock`). Requests are matched by `request_id` to futures; `on_track_start`/`on_track_end` callbacks fire on `file-loaded`/`end-file` events. mpv args include `--prefetch-playlist=yes`, `--gapless-audio=yes`, a DASH `protocol_whitelist` for hi-res .mpd playback, replaygain, and optional ALSA output.
+- **Windowed URL loading**: `enqueue_and_play` only resolves the first `_LOOKAHEAD` (8) track URLs (`_load_window`); as playback advances, `_on_mpv_track_start` → `_maybe_extend_lookahead` → `_extend_lookahead` fetches one window at a time (guarded by `_extending_lookahead`; gen-guards: `_queue_gen` + `_load_gen`). `jump_to_queue_index` loads on demand through `_load_and_jump`/`_do_playlist_jump`/`_async_playlist_jump` when the target isn't buffered. `append_to_queue` no longer eager-fetches.
+- **`_mpv_playlist` mapping**: `_mpv_playlist[pos] → queue index`, the source of truth when URLs fail to load (failed tracks are skipped but still advance `_mpv_loaded_count`, so mpv positions don't line up 1:1 with queue indices). `_on_mpv_track_start` maps through it; weighted-shuffle wrap in `_on_mpv_track_end`/`action_next_track` restarts the queue via `enqueue_and_play` when the pick isn't buffered.
 - Volume persists via `volume_store.py`; queue persists via `_save_queue`/`_restore_queue` (`queue.json`), showing placeholder `_SavedTrack` objects immediately while real objects are fetched in the background.
 - Crossfade: 1 s poll fades volume out over the last `crossfade_secs` of a track; restored on `_on_mpv_track_start`.
+
+## TidalClient (rate limiting & streams)
+
+`TidalClient` (`tidal_client.py`) is the only way to touch the tidalapi session, and every API method routes through `_api_call`: a global 0.3 s `_throttle` (shared `threading.Lock` across workers) plus up to 2 auto-retries honouring `retry_after` on `TooManyRequests`. Stream resolution (`get_track_url`) walks `_QUALITY_ORDER` (hi_res → lossless → 320k → 96k), ratcheting `_quality_floor` up permanently on 401/403; hi-res DASH manifests (`get_stream` → `get_stream_manifest`, `application/dash+xml`) are decoded to temp `.mpd` files in `tempfile.gettempdir()/tidal-tui-manifests` (cleared on exit via `_clear_manifests`), while byte-stream tiers return the direct URL.
 
 ## Shuffle modes (weighted)
 
@@ -78,11 +90,11 @@ Four modes toggled by `s` (constants in `play_count_store.py`): `SHUFFLE_OFF`, `
 
 ## MPRIS
 
-`MPRISService` (mpris.py) exposes `org.mpris.MediaPlayer2.tidal-tui` with dbus-next; player actions are thin wrappers scheduling app callbacks; properties are updated via hand-sent `PropertiesChanged` signals (dbus-next's `emit_properties_changed` is not used). Art URL embedded in `Metadata` as `mpris:artUrl`. macOS-only quirks: `--vo=null` + video-add of downloaded art to feed the Now Playing widget.
+`MPRISService` (mpris.py) exposes `org.mpris.MediaPlayer2.tidal-tui` with dbus-next; player actions are thin wrappers scheduling app callbacks; properties are updated via hand-sent `PropertiesChanged` signals (dbus-next's `emit_properties_changed` is not used). `Seek` converts the relative microsecond offset against the tracked position; `SetPosition` ignores stale requests for a non-current track. Art URL embedded in `Metadata` as `mpris:artUrl`. macOS-only quirks: `--vo=null` + video-add of downloaded art to feed the Now Playing widget.
 
 ## Widgets
 
-- `TrackList` (track_list.py): `DataTable` with `#/Title/Artist/Album/Time`; `load()` fills + focuses the table (which auto-activates the enclosing tab via Textual's `TabPane.Focused`); posts `TrackSelected`/`TrackAppendRequested`/`TrackRadioRequested` messages. Row keys are the track index strings.
+- `TrackList` (track_list.py): `DataTable` with `#/Title/Artist/Album/Time`; hi-res tracks get a `ᴴᴵᴿᴱˢ` badge (from `media_metadata_tags`, no extra API calls); `load()` fills + focuses the table (which auto-activates the enclosing tab via Textual's `TabPane.Focused`); posts `TrackSelected`/`TrackAppendRequested`/`TrackRadioRequested` messages. Row keys are the track index strings.
 - `NowPlayingBar`: ~10 `reactive` props with watchers; 5-line synced lyrics (2 context lines, `lyrics.py` LRC parser) visible by default (`y` toggles); EQ toggle; bar height is content-driven (`height: auto`, docked bottom) so track info, lyrics and the controls row always coexist without clipping.
 - `EQVisualizer`: purely simulated 30 fps cava-style bars (BPM-driven bass beats, gravity fall, peak hold, monstrcat smoothing), 5 gradient themes (`eq_theme`).
 - `AlbumArt`: downloads via `requests` (or PIL for `file://`), stale-URL guard, renders with `textual_image`.
@@ -100,7 +112,7 @@ Four modes toggled by `s` (constants in `play_count_store.py`): `SHUFFLE_OFF`, `
 
 No pytest suite. Verification options:
 1. `python -m compileall tidaltui/` and import the app module.
-2. Headless Textual pilot tests (see `/tmp/opencode/test_cycle_*.py` from the hjkl fix) — mount `ContentArea` in a bare `App`, `await area.replace(screen)`, `pilot.press(...)`, assert on `tabs.active`, `app.screen.focused`, `ListView.index`. Requires a terminal-capable environment only for the terminal size; Textual's `run_test` is otherwise headless.
+2. Headless Textual pilot tests (see `/tmp/opencode/test_cycle_*.py` from the hjkl fix) — mount `ContentArea` in a bare `App`, `await area.replace(screen)`, `pilot.press(...)`, assert on `tabs.active`, `app.screen.focused`, `ListView.index`. Requires a terminal-capable environment only for the terminal size; Textual's `run_test` is otherwise headless. `/tmp/opencode/test_lookahead.py` exercises the windowed URL loader with a stubbed client (patch `player.start`/`mpris.start` to no-ops so no mpv/D-Bus is spawned).
 3. Running the real app needs a TIDAL session; don't do it in CI.
 
 ## Gotchas

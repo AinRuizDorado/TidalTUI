@@ -2,10 +2,18 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import DataTable
+
+# Superscript glyph appended to tracks that offer a hi-res stream.
+_HIRES_BADGE = "ᴴᴵᴿᴱˢ"  # ᴴᴵᴿᴱˢ
+
+
+def _is_hires(track) -> bool:
+    return "HIRES_LOSSLESS" in (getattr(track, "media_metadata_tags", None) or [])
 
 
 class TrackList(Widget):
@@ -59,11 +67,16 @@ class TrackList(Widget):
     def _fill(self, table: DataTable) -> None:
         for i, t in enumerate(self._tracks):
             name = getattr(t, "name", "?")
+            if _is_hires(t):
+                title = Text(name)
+                title.append(f"  {_HIRES_BADGE}", style="dim cyan")
+            else:
+                title = name
             artist = getattr(getattr(t, "artist", None), "name", "–")
             album = getattr(getattr(t, "album", None), "name", "–")
             dur = int(getattr(t, "duration", 0))
             m, s = divmod(dur, 60)
-            table.add_row(str(i + 1), name, artist, album, f"{m}:{s:02d}", key=str(i))
+            table.add_row(str(i + 1), title, artist, album, f"{m}:{s:02d}", key=str(i))
 
     def _row_key_to_index(self, row_key) -> int | None:
         if row_key and row_key.value is not None:

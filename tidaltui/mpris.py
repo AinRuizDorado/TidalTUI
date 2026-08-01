@@ -47,6 +47,18 @@ class MediaPlayer2Interface(ServiceInterface):
         return "tidal-tui"
 
     @dbus_property(access=PropertyAccess.READ)
+    def Fullscreen(self) -> "b":  # noqa: F821
+        return False
+
+    @dbus_property(access=PropertyAccess.READ)
+    def CanSetFullscreen(self) -> "b":  # noqa: F821
+        return False
+
+    @dbus_property(access=PropertyAccess.READ)
+    def DesktopEntry(self) -> "s":  # noqa: F821
+        return "tidal-tui"
+
+    @dbus_property(access=PropertyAccess.READ)
     def SupportedUriSchemes(self) -> "as":  # noqa: F821
         return []
 
@@ -104,11 +116,20 @@ class MediaPlayer2PlayerInterface(ServiceInterface):
 
     @method()
     def Seek(self, offset: "x"):  # noqa: F821
-        asyncio.ensure_future(self._seek_cb(offset / 1_000_000))
+        # MPRIS Seek supplies a relative offset (microseconds); the player
+        # performs an absolute seek, so convert against the tracked position.
+        current_seconds = self._position / 1_000_000
+        target_seconds = max(0.0, current_seconds + offset / 1_000_000)
+        asyncio.ensure_future(self._seek_cb(target_seconds))
 
     @method()
     def SetPosition(self, track_id: "o", position: "x"):  # noqa: F821
-        pass
+        # Ignore stale requests aimed at a track that is no longer current.
+        current_track_id = self._metadata.get("mpris:trackid")
+        if current_track_id is None or current_track_id.value != track_id:
+            return
+        target_seconds = max(0.0, position / 1_000_000)
+        asyncio.ensure_future(self._seek_cb(target_seconds))
 
     @method()
     def OpenUri(self, uri: "s"):  # noqa: F821

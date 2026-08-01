@@ -8,6 +8,10 @@ from typing import Optional
 
 log = logging.getLogger(__name__)
 
+# Number of track URLs to keep buffered ahead of the current position in mpv's
+# playlist. Keeping this small prevents blasting the API when switching playlists.
+_LOOKAHEAD = 8
+
 from textual import work
 from textual.app import App, ComposeResult
 from textual.actions import SkipAction
@@ -313,6 +317,9 @@ class _SavedTrack:
 
 class TidalTUIApp(App):
     CSS = """
+    App {
+        background: ansi_default;
+    }
     Screen {
         background: transparent;
         layout: vertical;
@@ -376,12 +383,20 @@ class TidalTUIApp(App):
             self._local_library = None
         self._eq_theme = cfg.get("eq_theme", "mono")
         self._eq_labels = bool(cfg.get("eq_labels", False))
+        self._background = cfg.get("background", "ansi_default")
         self._nav = list(_NAV_BASE)
         if self._local_library:
             self._nav.append(("local", "Local"))
         self._queue: list = []
         self._current_idx: int = -1
         self._queue_gen: int = 0  # incremented on each new enqueue to cancel stale workers
+        self._load_gen: int = 0   # incremented on each new URL-loading operation
+        self._mpv_loaded_count: int = 0  # high-water mark: next queue index to attempt loading
+        # Maps mpv playlist position -> queue index. Tracks whose URL failed to
+        # load are never appended to mpv, so mpv positions do not line up 1:1 with
+        # queue indices; this list is the source of truth for that mapping.
+        self._mpv_playlist: list[int] = []
+        self._extending_lookahead: bool = False
         self._current_track = None
         self._current_favourited: bool = False
         self._target_volume: int = _saved_vol
@@ -405,6 +420,9 @@ class TidalTUIApp(App):
         yield NowPlayingBar()
 
     async def on_mount(self) -> None:
+        from textual.color import Color
+        self.styles.background = Color.parse(self._background)
+
         # matugen theme integration (must run before any UI interaction)
         from tidaltui.matugen_theme import (
             try_load_matugen_theme,
@@ -492,8 +510,7 @@ class TidalTUIApp(App):
             return
         if not self._queue or self._current_idx < 0:
             return
-        # Only act when this was the last track — if there are tracks after
-        # current position, mpv will advance to them naturally.
+        # Only act when all queue tracks have been played.
         if self._current_idx + 1 < len(self._queue):
             return
         remaining = [t for i, t in enumerate(self._queue) if i != self._current_idx]
@@ -503,7 +520,8 @@ class TidalTUIApp(App):
             remaining, favourite=(mode == SHUFFLE_FAVOURITE)
         )
         if picks:
-            await self.jump_to_queue_index(self._queue.index(picks[0]))
+            new_idx = self._queue.index(picks[0])
+            self.enqueue_and_play(self._queue, start_index=new_idx)
             self.notify("Wrapping queue")
 
     async def _on_mpv_track_start(self) -> None:
@@ -513,9 +531,10 @@ class TidalTUIApp(App):
             await self.player.set_volume(self._target_volume)
 
         pos = await self.player.get_playlist_pos()
-        if 0 <= pos < len(self._queue):
-            self._current_idx = pos
-            track = self._queue[pos]
+        if 0 <= pos < len(self._mpv_playlist):
+            qidx = self._mpv_playlist[pos]
+            self._current_idx = qidx
+            track = self._queue[qidx]
             self._set_current_track(track)
             self.query_one(QueuePanel).refresh_queue(self._queue, self._current_idx)
             self.scrobbler.track_started(track)
@@ -523,6 +542,7 @@ class TidalTUIApp(App):
             if self._macos_now_playing:
                 await self._set_mpv_title(_now_playing_title(track))
                 await self._set_macos_album_art(track)
+            self._maybe_extend_lookahead()
 
     def _save_current(self) -> None:
         from tidaltui.tidal_client import CONF_DIR
@@ -606,8 +626,12 @@ class TidalTUIApp(App):
         self._queue = rotated
         self._current_idx = 0
         self._queue_gen += 1
+        self._load_gen += 1
+        self._mpv_loaded_count = 0
+        self._mpv_playlist = []
+        self._extending_lookahead = False
         asyncio.ensure_future(self.player.stop())
-        self._load_queue(rotated, self._queue_gen)
+        self._load_window(0, self._queue_gen, self._load_gen)
 
     def append_to_queue(self, tracks: list) -> None:
         if not self._queue:
@@ -616,85 +640,163 @@ class TidalTUIApp(App):
             return
         self._queue.extend(tracks)
         self.query_one(QueuePanel).refresh_queue(self._queue, self._current_idx)
-        self._append_tracks(tracks, self._queue_gen)
+        # The windowed loader will pick up newly added tracks when it extends;
+        # trigger an immediate extension in case they fall in the lookahead window.
+        self._maybe_extend_lookahead()
         count = len(tracks)
         label = tracks[0].name if count == 1 else f"{count} tracks"
         self.notify(f"Added {label} to queue")
 
     @work(thread=True)
-    def _load_queue(self, tracks: list, gen: int) -> None:
-        import time
-        from tidalapi.exceptions import TooManyRequests
-        for i, track in enumerate(tracks):
-            if self._queue_gen != gen:
+    def _load_window(self, start_idx: int, queue_gen: int, load_gen: int) -> None:
+        """Load up to _LOOKAHEAD track URLs into mpv starting at start_idx; the rest
+        are fetched on demand. mpv's playlist is assumed empty (freshly stopped), so
+        the first track that loads successfully replaces, and the rest append."""
+        end = min(start_idx + _LOOKAHEAD, len(self._queue))
+        first = True
+        for i in range(start_idx, end):
+            if self._queue_gen != queue_gen or self._load_gen != load_gen:
                 return
-            try:
-                url = self.client.get_track_url(track)
-            except TooManyRequests as e:
-                wait = e.retry_after
-                msg = (
-                    f"TIDAL rate limit – try again in {wait}s"
-                    if wait > 0
-                    else "TIDAL rate limit – try again in a moment"
-                )
-                self.call_from_thread(lambda m=msg: self.notify(m, severity="error", timeout=12))
-                return
-            if not url or self._queue_gen != gen:
+            url = self.client.get_track_url(self._queue[i])
+            if not url or self._queue_gen != queue_gen or self._load_gen != load_gen:
                 continue
-
-            if i == 0:
-                self.call_from_thread(self._play_if_current, url, gen, track)
+            if first:
+                self.call_from_thread(self._play_if_current, url, queue_gen, self._queue[i], i)
+                first = False
             else:
-                self.call_from_thread(self._append_if_current, url, gen)
-                # Buffer first 3 tracks quickly; throttle the rest to avoid rate limits
-                time.sleep(0.15 if i < 3 else 0.5)
-        if self._queue_gen == gen:
+                self.call_from_thread(self._append_if_current, url, queue_gen, i)
+        if self._queue_gen == queue_gen and self._load_gen == load_gen:
+            if first and end > start_idx:
+                self.call_from_thread(
+                    self.notify,
+                    "Couldn't load any tracks to play. Check your connection or "
+                    "lower the quality setting in config.json.",
+                    severity="error",
+                )
+            self.call_from_thread(self._mark_initial_loaded, queue_gen, load_gen, end)
             self.call_from_thread(
                 lambda: self.query_one(QueuePanel).refresh_queue(self._queue, self._current_idx)
             )
 
-    def _play_if_current(self, url: str, gen: int, track) -> None:
+    def _mark_initial_loaded(self, queue_gen: int, load_gen: int, count: int) -> None:
+        if self._queue_gen == queue_gen and self._load_gen == load_gen:
+            self._mpv_loaded_count = count
+            self._extending_lookahead = False
+            self._maybe_extend_lookahead()
+
+    def _maybe_extend_lookahead(self) -> None:
+        """If the lookahead window doesn't reach far enough, fetch the next URL."""
+        if self._extending_lookahead:
+            return
+        target = min(self._current_idx + _LOOKAHEAD, len(self._queue))
+        if self._mpv_loaded_count < target:
+            start = self._mpv_loaded_count
+            self._extending_lookahead = True
+            self._load_gen += 1
+            self._extend_lookahead(self._queue_gen, self._load_gen, start, target)
+
+    @work(thread=True)
+    def _extend_lookahead(
+        self, queue_gen: int, load_gen: int, start: int, end: int
+    ) -> None:
+        """Fetch URLs for queue[start:end] and append them to mpv."""
+        for i in range(start, end):
+            if self._queue_gen != queue_gen or self._load_gen != load_gen:
+                self.call_from_thread(self._on_lookahead_cancelled, load_gen)
+                return
+            url = self.client.get_track_url(self._queue[i])
+            if self._queue_gen != queue_gen or self._load_gen != load_gen:
+                self.call_from_thread(self._on_lookahead_cancelled, load_gen)
+                return
+            if url:
+                self.call_from_thread(self._on_url_appended, queue_gen, load_gen, i + 1, url, i)
+            else:
+                # Skip failed URLs but still advance the loaded count
+                self.call_from_thread(self._advance_loaded_count, queue_gen, load_gen, i + 1)
+        self.call_from_thread(self._on_lookahead_done, queue_gen, load_gen)
+
+    def _on_url_appended(
+        self, queue_gen: int, load_gen: int, new_count: int, url: str, qidx: int
+    ) -> None:
+        if self._queue_gen == queue_gen and self._load_gen == load_gen:
+            asyncio.ensure_future(self.player.append(url))
+            self._mpv_playlist.append(qidx)
+            self._mpv_loaded_count = new_count
+
+    def _advance_loaded_count(
+        self, queue_gen: int, load_gen: int, new_count: int
+    ) -> None:
+        if self._queue_gen == queue_gen and self._load_gen == load_gen:
+            self._mpv_loaded_count = new_count
+
+    def _on_lookahead_done(self, queue_gen: int, load_gen: int) -> None:
+        if self._queue_gen == queue_gen and self._load_gen == load_gen:
+            self._extending_lookahead = False
+            self._maybe_extend_lookahead()
+
+    def _on_lookahead_cancelled(self, load_gen: int) -> None:
+        if self._load_gen == load_gen:
+            self._extending_lookahead = False
+
+    def _play_if_current(self, url: str, gen: int, track, qidx: int) -> None:
         if self._queue_gen != gen:
             return
         asyncio.ensure_future(self.player.play(url))
+        self._mpv_playlist = [qidx]
         self._set_current_track(track)
 
-    def _append_if_current(self, url: str, gen: int) -> None:
+    def _append_if_current(self, url: str, gen: int, qidx: int) -> None:
         if self._queue_gen == gen:
             asyncio.ensure_future(self.player.append(url))
-
-    @work(thread=True)
-    def _append_tracks(self, tracks: list, gen: int) -> None:
-        import time
-        from tidalapi.exceptions import TooManyRequests
-        for track in tracks:
-            if self._queue_gen != gen:
-                return
-            try:
-                url = self.client.get_track_url(track)
-            except TooManyRequests as e:
-                wait = e.retry_after
-                msg = (
-                    f"TIDAL rate limit – try again in {wait}s"
-                    if wait > 0
-                    else "TIDAL rate limit – try again in a moment"
-                )
-                self.call_from_thread(lambda m=msg: self.notify(m, severity="error", timeout=12))
-                return
-            if url:
-                self.call_from_thread(self._append_if_current, url, gen)
-                time.sleep(0.3)
+            self._mpv_playlist.append(qidx)
 
     def on_track_list_track_append_requested(self, event) -> None:
         self.append_to_queue([event.track])
 
     async def jump_to_queue_index(self, idx: int) -> None:
         """Skip playback to a specific queue position."""
-        if 0 <= idx < len(self._queue):
+        if not (0 <= idx < len(self._queue)):
+            return
+        if idx < self._mpv_loaded_count:
             await self.player._cmd(["set_property", "playlist-pos", idx])
             # If mpv went idle after the playlist ended, the above restores the
             # position but leaves it paused — ensure playback actually starts.
             await self.player._cmd(["set_property", "pause", False])
+        else:
+            # URL for this position isn't in mpv yet — load on demand.
+            start = self._mpv_loaded_count
+            self._extending_lookahead = True
+            self._load_gen += 1
+            self._load_and_jump(idx, start, self._queue_gen, self._load_gen)
+
+    @work(thread=True)
+    def _load_and_jump(
+        self, target_idx: int, start: int, queue_gen: int, load_gen: int
+    ) -> None:
+        """Fetch URLs for queue[start..target_idx] then jump to target_idx."""
+        for i in range(start, target_idx + 1):
+            if self._queue_gen != queue_gen or self._load_gen != load_gen:
+                self.call_from_thread(self._on_lookahead_cancelled, load_gen)
+                return
+            url = self.client.get_track_url(self._queue[i])
+            if self._queue_gen != queue_gen or self._load_gen != load_gen:
+                self.call_from_thread(self._on_lookahead_cancelled, load_gen)
+                return
+            if url:
+                self.call_from_thread(self._on_url_appended, queue_gen, load_gen, i + 1, url, i)
+            else:
+                self.call_from_thread(self._advance_loaded_count, queue_gen, load_gen, i + 1)
+        if self._queue_gen == queue_gen and self._load_gen == load_gen:
+            self.call_from_thread(self._do_playlist_jump, target_idx, queue_gen, load_gen)
+
+    def _do_playlist_jump(self, idx: int, queue_gen: int, load_gen: int) -> None:
+        if self._queue_gen == queue_gen and self._load_gen == load_gen:
+            self._extending_lookahead = False
+            asyncio.ensure_future(self._async_playlist_jump(idx))
+
+    async def _async_playlist_jump(self, idx: int) -> None:
+        await self.player._cmd(["set_property", "playlist-pos", idx])
+        await self.player._cmd(["set_property", "pause", False])
 
     # --- Open objects (albums, artists, mixes, playlists) by type ---
 
@@ -935,7 +1037,14 @@ class TidalTUIApp(App):
                     remaining, favourite=(mode == SHUFFLE_FAVOURITE)
                 )
                 if picks:
-                    await self.jump_to_queue_index(self._queue.index(picks[0]))
+                    new_idx = self._queue.index(picks[0])
+                    if new_idx < self._mpv_loaded_count:
+                        await self.player._cmd(["set_property", "playlist-pos", new_idx])
+                        await self.player._cmd(["set_property", "pause", False])
+                    else:
+                        # Restart the queue from the picked track so mpv's playlist
+                        # stays in sync with self._queue without fetching a large gap.
+                        self.enqueue_and_play(self._queue, start_index=new_idx)
                     return
         await self.player.next()
 
@@ -1033,7 +1142,7 @@ class TidalTUIApp(App):
         tracks = []
         for tid in track_ids:
             try:
-                tracks.append(self.client.session.track(tid))
+                tracks.append(self.client.get_track(tid))
             except Exception:
                 pass
         if tracks:
@@ -1078,5 +1187,6 @@ class TidalTUIApp(App):
         self._save_queue()
         self._play_count_store.save()
         self._cleanup_macos_art_temp()
+        self.client._clear_manifests()
         await self.mpris.stop()
         await self.player.shutdown()

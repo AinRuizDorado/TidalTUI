@@ -13,6 +13,15 @@ A terminal UI client for [TIDAL](https://tidal.com), built with Python. Browse y
 
 ---
 
+## Recent Updates
+
+- **Hi-res (TIDAL MAX) playback** – hi-res tracks (segmented DASH) now play via decoded `.mpd` manifests, and tracks offering a hi-res stream are badged `ᴴᴵᴿᴱˢ` in track lists. If your subscription can't stream a tier, the app automatically falls back to the next lower quality.
+- **Rate limiting improvements** – switching between long playlists no longer triggers rate-limit errors. Only the next 8 stream URLs are fetched at a time (windowed lookahead), and all API calls share a global 0.3 s throttle with automatic retry on `TooManyRequests`.
+- **MPRIS strict clients** – the service now declares all read-only properties, exposes the root-interface `Fullscreen`/`CanSetFullscreen`/`DesktopEntry` properties, and honours proper MPRIS seek semantics.
+- **Configurable background** – set `"background"` in `config.json` to any CSS colour (see Configuration).
+
+---
+
 ## Features
 
 ### Playback
@@ -221,6 +230,7 @@ Create `~/.config/tidal-tui/config.json` to override defaults:
 | `crossfade` | integer | `5` | Crossfade duration in seconds when crossfade is enabled (toggle with `x`). Crossfade is off at startup regardless of this value. |
 | `eq_theme` | `"classic"` `"fire"` `"ice"` `"mono"` `"neon"` | `"mono"` | Colour theme for the EQ visualiser in the now-playing bar. |
 | `eq_labels` | `true` / `false` | `false` | Show frequency labels (32 Hz – 16 kHz) beneath the EQ visualiser bars. |
+| `background` | CSS color string | `"ansi_default"` | App background color. `"ansi_default"` uses the terminal's default background, which respects your terminal emulator's transparency setting (e.g. `background_opacity` in kitty). Set to a hex color like `"#181825"` to disable transparency. |
 
 ![EQ themes](assets/eq_themes.png)
 

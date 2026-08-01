@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import math
-import time
 from enum import IntEnum
 from typing import TYPE_CHECKING
 
@@ -281,7 +280,6 @@ class Recommender:
             track = self._client.resolve_track(a_name, t_name)
             if track:
                 results.append(track)
-            time.sleep(0.2)
 
         return results
 
@@ -323,7 +321,7 @@ class Recommender:
             if len(results) >= n:
                 break
             try:
-                results_search = self._client.session.search(artist_name, limit=10)
+                results_search = self._client.search(artist_name, limit=10)
                 artists = results_search.get("artists") or []
                 if not artists:
                     continue
