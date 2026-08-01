@@ -16,9 +16,12 @@ from textual import work
 from textual.app import App, ComposeResult
 from textual.actions import SkipAction
 from textual.binding import Binding
-from textual.containers import Horizontal
+from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.screen import Screen
 from textual.widget import Widget
-from textual.widgets import Label, ListItem, ListView, TabbedContent, TabPane
+from textual.widgets import Label, ListItem, ListView, Static, TabbedContent, TabPane
+
+from rich.text import Text
 
 from tidaltui.lyrics import parse_lrc
 from tidaltui.mpris import MPRISService
@@ -272,6 +275,93 @@ class QueuePanel(Widget):
 
 
 # ---------------------------------------------------------------------------
+# Help modal
+# ---------------------------------------------------------------------------
+
+# Keys handled outside TidalTUIApp.BINDINGS (screen/widget-local handlers)
+_LOCAL_KEYS = [
+    ("h / l", "Cycle tabs"),
+    ("j / k", "Move cursor"),
+    ("Enter", "Open / play"),
+    ("a", "Add track to queue"),
+    ("R", "Start radio from track"),
+    ("D", "Cycle adventure dial"),
+    ("S", "Sort favourite albums"),
+    ("G", "Toggle heatmap scale"),
+]
+
+
+def _help_text() -> Text:
+    """Build the hotkey listing as a styled Text (avoids markup-escaping issues
+    with keys like '[' / ']' when building from BINDINGS)."""
+    text = Text()
+    for b in TidalTUIApp.BINDINGS:
+        if b.description:
+            key = "?" if b.key == "question_mark" else b.key
+            text.append(f"{key:<12}", style="bold")
+            text.append(f"  {b.description}\n")
+    text.append("\n")
+    for key, desc in _LOCAL_KEYS:
+        text.append(f"{key:<12}", style="bold")
+        text.append(f"  {desc}\n")
+    return text
+
+
+class HelpModal(Screen):
+    """Centered popup listing the project's hotkeys. Blocks all other keys while open."""
+
+    BINDINGS = [
+        Binding("escape", "close_help", "Close", show=False),
+        Binding("question_mark", "close_help", "Close", show=False),
+        Binding("j", "scroll_down", "Scroll", show=False),
+        Binding("k", "scroll_up", "Scroll", show=False),
+    ]
+
+    DEFAULT_CSS = """
+    HelpModal {
+        align: center middle;
+        background: $background 75%;
+    }
+    HelpModal #help-box {
+        width: 64;
+        max-width: 90%;
+        height: 70%;
+        background: $panel;
+        border: round $primary;
+        padding: 1 2;
+    }
+    HelpModal #help-title {
+        text-style: bold;
+        text-align: center;
+        margin-bottom: 1;
+    }
+    HelpModal #help-scroll {
+        width: 100%;
+        height: 1fr;
+    }
+    HelpModal #help-body {
+        width: 100%;
+        height: auto;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="help-box"):
+            yield Label("Keyboard shortcuts", id="help-title")
+            with VerticalScroll(id="help-scroll"):
+                yield Static(_help_text(), id="help-body")
+
+    def action_close_help(self) -> None:
+        self.app.pop_screen()
+
+    def action_scroll_down(self) -> None:
+        self.query_one(VerticalScroll).scroll_down()
+
+    def action_scroll_up(self) -> None:
+        self.query_one(VerticalScroll).scroll_up()
+
+
+# ---------------------------------------------------------------------------
 # Saved-queue placeholder
 # ---------------------------------------------------------------------------
 
@@ -324,6 +414,13 @@ class TidalTUIApp(App):
         background: transparent;
         layout: vertical;
     }
+    #help-hint {
+        height: 1;
+        width: auto;
+        color: $text-muted;
+        padding: 0 2;
+        background: transparent;
+    }
     #main {
         layout: horizontal;
         height: 1fr;
@@ -350,6 +447,7 @@ class TidalTUIApp(App):
         Binding("ctrl+q", "quit", "Quit"),
         Binding("H", "focus_sidebar", "Sidebar", show=False),
         Binding("L", "focus_next_panel", "Next Panel", show=False),
+        Binding("question_mark", "toggle_help", "Help", show=False),
     ]
 
     def __init__(self, client: TidalClient):
@@ -413,6 +511,7 @@ class TidalTUIApp(App):
         self._matugen_mtime: float = 0.0
 
     def compose(self) -> ComposeResult:
+        yield Label("Press ? for Help", id="help-hint")
         with Horizontal(id="main"):
             yield Sidebar(nav=self._nav, id="sidebar-panel")
             yield ContentArea(id="content-panel")
@@ -845,11 +944,27 @@ class TidalTUIApp(App):
         """Focus the next widget in tab order (``shift+l``)."""
         self.screen.focus_next()
 
+    async def action_toggle_help(self) -> None:
+        """Open (or close) the centered hotkey popup."""
+        if isinstance(self.screen, HelpModal):
+            await self.pop_screen()
+        else:
+            await self.push_screen(HelpModal())
+
+    async def _check_bindings(self, key: str, priority: bool = False) -> bool:
+        """While the help modal is open, swallow every key except the ones the
+        modal itself handles, so playback/search bindings can't fire behind it."""
+        if isinstance(self.screen, HelpModal):
+            return key in ("escape", "question_mark", "j", "k") and await super()._check_bindings(key, priority)
+        return await super()._check_bindings(key, priority)
+
     def on_key(self, event) -> None:
         """Vim-style ``h`` / ``l``: cycle the current screen's tab panes no
         matter where focus is (sidebar, queue, content, tab bar). Printable
         keys typed into text inputs never reach this handler because the
         Input widget stops them first."""
+        if isinstance(self.screen, HelpModal):
+            return
         if event.key in ("h", "l"):
             if self.query_one(ContentArea).cycle_tabs(forward=event.key == "l"):
                 event.stop()

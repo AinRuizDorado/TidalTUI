@@ -171,6 +171,7 @@ The source code for token handling is in [`tidaltui/tidal_client.py`](tidaltui/t
 | `A` | Add all tracks in current view to queue |
 | `q` | Toggle queue panel |
 | `y` | Toggle lyrics |
+| `?` | Open keyboard shortcuts popup |
 | `ctrl+s` | Go to Search |
 | `ctrl+l` | Go to Library |
 | `escape` | Navigate back |
